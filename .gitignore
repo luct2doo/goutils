@@ -1,0 +1,21 @@
+# 编译产物
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
+.workbuddy/
+.trae/
+.zed/
