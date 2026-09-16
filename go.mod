@@ -3,9 +3,11 @@ module github.com/luct2doo/goutils
 go 1.27.1
 
 require (
+	github.com/gertd/go-pluralize v0.2.1
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
+	github.com/iancoleman/strcase v0.3.0
 	github.com/matoous/go-nanoid/v2 v2.1.0
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/spf13/cast v1.10.0
