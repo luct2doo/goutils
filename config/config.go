@@ -102,3 +102,31 @@ type Database struct {
 	MaxOpenConns    int           `json:"max_open_conns" mapstructure:"max_open_conns" yaml:"max_open_conns"`
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime" mapstructure:"conn_max_lifetime" yaml:"conn_max_lifetime"`
 }
+
+// Cache 缓存配置
+type Cache struct {
+	Driver     string `json:"driver" mapstructure:"driver" yaml:"driver"`
+	Prefix     string `json:"prefix" mapstructure:"prefix" yaml:"prefix"`
+	ExpireTime int    `json:"expire_time" mapstructure:"expire_time" yaml:"expire_time"`
+}
+
+// Captcha 图形验证码配置
+type Captcha struct {
+	Width           int     `json:"width" mapstructure:"width" yaml:"width"`
+	Height          int     `json:"height" mapstructure:"height" yaml:"height"`
+	Length          int     `json:"length" mapstructure:"length" yaml:"length"`
+	MaxSkew         float64 `json:"max_skew" mapstructure:"max_skew" yaml:"max_skew"`
+	DotCount        int     `json:"dot_count" mapstructure:"dot_count" yaml:"dot_count"`
+	ExpireTime      int     `json:"expire_time" mapstructure:"expire_time" yaml:"expire_time"`
+	DebugExpireTime int     `json:"debug_expire_time" mapstructure:"debug_expire_time" yaml:"debug_expire_time"`
+	TestingKey      string  `json:"testing_key" mapstructure:"testing_key" yaml:"testing_key"`
+}
+
+// Paging 分页相关配置
+type Paging struct {
+	PerPage         int    `json:"per_page" mapstructure:"per_page" yaml:"per_page"`
+	UrlQueryPage    string `json:"url_query_page" mapstructure:"url_query_page" yaml:"url_query_page"`
+	UrlQuerySort    string `json:"url_query_sort" mapstructure:"url_query_sort" yaml:"url_query_sort"`
+	UrlQueryOrder   string `json:"url_query_order" mapstructure:"url_query_order" yaml:"url_query_order"`
+	UrlQueryPerPage string `json:"url_query_per_page" mapstructure:"url_query_per_page" yaml:"url_query_per_page"`
+}
