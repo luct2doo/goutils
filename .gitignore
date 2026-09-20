@@ -19,3 +19,5 @@ go.work.sum
 .workbuddy/
 .trae/
 .zed/
+
+/cache/cache_test.go
