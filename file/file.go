@@ -22,7 +22,7 @@ const DefaultPublicRoot = "public"
 //
 // 库本身不认识任何应用的鉴权上下文（例如 rugao 的 auth.CurrentUID），
 // 因此由调用方注入。传 nil 时统一落到 anonymous 目录。
-type UIDFunc func(c *gin.Context) string
+type UserIDFunc func(c *gin.Context) string
 
 type FileService interface {
 	Put(data []byte, to string) error
@@ -35,9 +35,9 @@ type FileService interface {
 
 // fileService 实现 FileService 接口
 type fileService struct {
-	app     *app.App
-	root    string  // 上传文件落盘根目录
-	uidFunc UIDFunc // 当前用户 ID 提取函数，可为 nil
+	app        *app.App
+	root       string     // 上传文件落盘根目录
+	userIDFunc UserIDFunc // 当前用户 ID 提取函数，可为 nil
 }
 
 // NewFileService 创建文件服务实例
@@ -48,14 +48,14 @@ type fileService struct {
 //
 // 返回:
 //   - FileService: 文件服务接口实例
-func NewFileService(app *app.App, root string, uidFunc UIDFunc) FileService {
+func NewFileService(app *app.App, root string, userIDFunc UserIDFunc) FileService {
 	if root == "" {
 		root = DefaultPublicRoot
 	}
 	return &fileService{
-		app:     app,
-		root:    root,
-		uidFunc: uidFunc,
+		app:        app,
+		root:       root,
+		userIDFunc: userIDFunc,
 	}
 }
 
@@ -93,13 +93,13 @@ func (fs *fileService) FileNameWithoutExtension(fileName string) string {
 	return strings.TrimSuffix(fileName, filepath.Ext(fileName))
 }
 
-// currentUID 取当前用户 ID，无 uidFunc 或取不到时返回 "anonymous"
+// currentUID 取当前用户 ID，无 userIDFunc 或取不到时返回 "anonymous"
 func (fs *fileService) currentUID(c *gin.Context) string {
-	if fs.uidFunc == nil {
+	if fs.userIDFunc == nil {
 		return "anonymous"
 	}
-	if uid := fs.uidFunc(c); uid != "" {
-		return uid
+	if userID := fs.userIDFunc(c); userID != "" {
+		return userID
 	}
 	return "anonymous"
 }
