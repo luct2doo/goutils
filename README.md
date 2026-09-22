@@ -73,6 +73,18 @@ a := app.NewApp(&appCfg)
 l := logger.NewLogger(&logCfg, a)
 ```
 
+### 初始化顺序
+
+`app` 与 `logger` 是其余组件的前置依赖，请最先构造：
+
+```
+config → app.NewApp → logger.NewLogger → jwt / redis / database / cache / paginator …
+```
+
+- `redis`、`cache`、`limiter`、`paginator`、`response`、`jwt` 内部都会调用 `logger` 的包级函数（`logger.LogIf` 等）。
+- 万一漏调 `NewLogger`，包级函数会退化为「写 stderr 的兜底 logger」而**不会 panic**——出现这类 stderr 输出即说明初始化顺序有问题。
+- 日志的 `caller` 字段依赖跳帧设置：包级函数 `logger.Info(...)` 与实例方法 `l.Info(...)` 都已校准到真实调用点，改动 logger 初始化时请一并跑 `logger` 包的测试。
+
 ## 安全注意事项
 
 - `paginator.Param.Sort` / `Order` 会被拼进 SQL 的 `ORDER BY` 片段。库内已做字形校验（`column` 或 `table.column`）+ 可选白名单（`Param.AllowedSorts`），请不要在调用前绕过本库自行拼接。
@@ -80,6 +92,7 @@ l := logger.NewLogger(&logCfg, a)
 - `database.DeleteAllTables`、`redis.FlushDB`、`cache.Flush` 均为破坏性操作，请只在测试环境调用。
 - `helpers.GetLocationFromIP` 默认使用 `http://ip-api.com`（明文 HTTP，受免费额度限制）。生产环境请用 `helpers.NewIPAPIProvider` 注入 HTTPS 端点或自建代理。
 - `redis.NewRedisClient*` 在配置非法时不会回落到本机 Redis，而是把错误写入 `RedisClient.ConfigErr`，请检查该字段后再使用。
+- `limiter.NewLimiter` 在 Redis 不可用时 `store` 为 nil，`CheckRate` 会返回错误而非崩溃；调用方应先判断返回值再继续。
 
 ## License
 
