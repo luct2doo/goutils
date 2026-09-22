@@ -3,6 +3,8 @@ package paginator
 
 import (
 	"math"
+	"regexp"
+	"strings"
 
 	"github.com/luct2doo/goutils/config"
 	"github.com/luct2doo/goutils/logger"
@@ -10,6 +12,17 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+const (
+	defaultSortField = "id"   // 默认排序字段
+	defaultSortOrder = "desc" // 默认排序方向
+)
+
+// sortKeyPattern 排序字段的字形校验：column 或 table.column。
+//
+// 排序字段无法通过 GORM 的参数绑定传参（Order 接收的是 SQL 片段），
+// 因此必须在这里做白名单式校验，否则就是 SQL 注入入口。
+var sortKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)?$`)
 
 // Paging 分页响应数据
 type Paging struct {
@@ -22,9 +35,14 @@ type Paging struct {
 // Param 分页请求参数，由 Handler 层从 HTTP 或 gRPC 请求中提取后传入
 type Param struct {
 	Page    int    // 请求的页码
-	PerPage int    // 请求的每页条数
+	PerPage int    // 每页条数
 	Sort    string // 排序字段 (如 "id")
 	Order   string // 排序方向 ("asc" 或 "desc")
+
+	// AllowedSorts 可选的排序字段白名单。
+	// 非空时 Sort 必须命中其中之一（区分大小写）；为空时仅做字形校验。
+	// 注意：白名单里的值同样要通过字形校验，避免把注入片段当成合法候选。
+	AllowedSorts []string
 }
 
 // BuildParam 从请求数据构建分页参数
@@ -98,17 +116,12 @@ func (p *Paginator) initProperties(param Param) {
 	// 获取每页数量
 	p.PerPage = p.getPerPage(param.PerPage)
 
-	// 排序顺序
-	p.Order = param.Order
-	if p.Order == "" {
-		p.Order = "desc" // 默认降序
-	}
+	// 排序顺序：只接受 asc / desc，其余一律回退默认值
+	p.Order = normalizeOrder(param.Order)
 
-	// 排序字段
-	p.Sort = param.Sort
-	if p.Sort == "" {
-		p.Sort = "id" // 默认按 ID 排序
-	}
+	// 排序字段：字形校验 + 可选白名单，任何不合法输入都回退为 id。
+	// 这里是安全边界——Sort/Order 会被拼进 Order() 的 SQL 片段。
+	p.Sort = sanitizeSort(param.Sort, param.AllowedSorts)
 
 	// 核心修复：必须先计算总条数和总页数，再计算当前页和 Offset
 	p.TotalCount = p.getTotalCount()
@@ -122,6 +135,40 @@ func (p *Paginator) initProperties(param Param) {
 		p.Offset = (p.Page - 1) * p.PerPage
 	} else {
 		p.Offset = 0
+	}
+}
+
+// sanitizeSort 校验排序字段，不合法时回退为 defaultSortField。
+//
+// 规则（按顺序）：
+//  1. 去空格后为空 → 回退
+//  2. 不满足 sortKeyPattern（column 或 table.column）→ 回退
+//  3. allowed 非空且 sort 不在其中 → 回退
+func sanitizeSort(sort string, allowed []string) string {
+	sort = strings.TrimSpace(sort)
+	if sort == "" || !sortKeyPattern.MatchString(sort) {
+		return defaultSortField
+	}
+	if len(allowed) == 0 {
+		return sort
+	}
+	for _, a := range allowed {
+		if a == sort {
+			return sort
+		}
+	}
+	return defaultSortField
+}
+
+// normalizeOrder 校验排序方向，仅接受 asc / desc（大小写不敏感），其余回退为 desc
+func normalizeOrder(order string) string {
+	switch strings.ToLower(strings.TrimSpace(order)) {
+	case "asc":
+		return "asc"
+	case "desc":
+		return "desc"
+	default:
+		return defaultSortOrder
 	}
 }
 

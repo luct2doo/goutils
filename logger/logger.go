@@ -35,7 +35,7 @@ func NewLogger(logCfg *config.Log, app *app.App) *Logger {
 	// 设置日志等级
 	logLevel := new(zapcore.Level)
 	if err := logLevel.UnmarshalText([]byte(logCfg.Level)); err != nil {
-		fmt.Println("日志初始化错误，日志级别设置有误。请修改 config/log.go 文件中的 log.level 配置项")
+		fmt.Println("日志初始化错误，日志级别设置有误，请检查 log.level 配置项")
 	}
 	// 初始化 core
 	core := zapcore.NewCore(getEncoder(app), writeSyncer, logLevel)

@@ -1,7 +1,8 @@
 package database
 
 import (
-	"errors"
+	"fmt"
+
 	"github.com/luct2doo/goutils/config"
 
 	"gorm.io/gorm"
@@ -23,6 +24,10 @@ func (d *Database) CurrentDatabase() string {
 	return d.DB.Migrator().CurrentDatabase()
 }
 
+// DeleteAllTables 删除当前连接所连库中的全部表。
+//
+// ⚠️ 破坏性操作，请仅在测试环境中调用。
+// 连接类型不支持时返回 error（不再 panic），避免库代码直接终结调用方进程。
 func (d *Database) DeleteAllTables() (err error) {
 	switch d.dbCfg.Connection {
 	case "mysql":
@@ -30,7 +35,7 @@ func (d *Database) DeleteAllTables() (err error) {
 	case "sqlite":
 		err = d.deleteAllSqliteTables()
 	default:
-		panic(errors.New("database connection not supported"))
+		return fmt.Errorf("database connection not supported: %q", d.dbCfg.Connection)
 	}
 	return err
 }

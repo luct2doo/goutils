@@ -49,7 +49,7 @@ func NewCacheService(store Store) *CacheService {
 //   - obj: 要缓存的值（任意类型）
 //   - expireTime: 过期时间
 func (c *CacheService) Set(ctx context.Context, key string, obj any, expireTime time.Duration) {
-	b, err := json.Marshal(&obj)
+	b, err := json.Marshal(obj)
 	logger.LogIf(err)
 	c.store.Set(ctx, key, string(b), expireTime)
 }
@@ -79,17 +79,17 @@ func (c *CacheService) Has(ctx context.Context, key string) bool {
 }
 
 // GetObject 获取缓存并解析到指定对象
-// 应该传地址，用法如下:
-// model := user.User{}
-// cache.GetObject("key", &model)
-// 参数:
-//   - key: 缓存键
-//   - wanted: 目标对象（传址）
+//
+// wanted 必须传指针，缓存不存在时不做任何事（wanted 保持原值）：
+//
+//	var model user.User
+//	cache.GetObject(ctx, "key", &model)
 func (c *CacheService) GetObject(ctx context.Context, key string, wanted any) {
 	val := c.store.Get(ctx, key)
 	if len(val) > 0 {
-		err := json.Unmarshal([]byte(val), &wanted)
-		logger.LogIf(err)
+		if err := json.Unmarshal([]byte(val), wanted); err != nil {
+			logger.LogIf(err)
+		}
 	}
 }
 
@@ -265,7 +265,7 @@ func (c *CacheService) Forget(ctx context.Context, key string) {
 //   - key: 缓存键
 //   - value: 缓存值（任意类型）
 func (c *CacheService) Forever(ctx context.Context, key string, value any) {
-	b, err := json.Marshal(&value)
+	b, err := json.Marshal(value)
 	logger.LogIf(err)
 	c.store.Forever(ctx, key, string(b))
 }

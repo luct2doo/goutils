@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	mathRand "math/rand"
 	"net"
 	"net/http"
 	"reflect"
@@ -26,26 +25,17 @@ type IPInfo struct {
 	Status     string `json:"status"` // 如果是 "fail" 表示失败
 }
 
+// QueryParams 是一个示例性的查询条件载体，配合 BuildSearchMap 使用。
+//
+// 字段的 query 标签即最终的查询键名；实际项目中按需增减字段即可
+// （BuildSearchMap 通过反射遍历所有带 query 标签的非空字符串字段）。
 type QueryParams struct {
-	// Dateline string `query:"dateline"`
 	// 时间范围查询
 	StartTime string `query:"start_time"` // 开始时间
 	EndTime   string `query:"end_time"`   // 结束时间
 
 	// 状态查询
-	Status     string `query:"status"` // 状态
-	JsonStatus string `query:"json_status"`
-
-	Company string `query:"company"` // 公司
-	Address string `query:"address"` // 地址
-
-	IconType   string `query:"icon_type"`
-	IconClass  string `query:"icon_class"`
-	IconCnname string `query:"icon_cnname"`
-
-	LoginName string `query:"login_name"`
-
-	Belongto string `query:"belongto"`
+	Status string `query:"status"` // 状态
 }
 
 // Empty 类似于 PHP 的 empty() 函数
@@ -126,27 +116,75 @@ func FirstElement(args []string) string {
 	return ""
 }
 
-// RandomString 生成长度为 length 的随机字符串
+// RandomString 生成长度为 length 的随机字符串（仅大小写字母）。
+//
+// 使用 crypto/rand，适用于生成上传文件名等对不可预测性有要求的场景。
+// length <= 0 或随机源读取失败时返回空字符串。
 func RandomString(length int) string {
-	mathRand.New(mathRand.NewSource(time.Now().UnixNano()))
-	letters := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	if length <= 0 {
+		return ""
+	}
+
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
 	for i := range b {
-		b[i] = letters[mathRand.Intn(len(letters))]
+		b[i] = letters[int(b[i])%len(letters)]
 	}
 	return string(b)
 }
 
-// GetLocationFromIP 根据 IP 查询并返回中文格式地址
-func GetLocationFromIP(ip string) string {
+// DefaultIPAPIBaseURL 是 IPAPIProvider 的默认端点。
+//
+// 注意：ip-api.com 的免费额度只支持明文 HTTP，本文档不推荐在生产环境使用明文传输；
+// 生产环境请通过 NewIPAPIProvider 注入自建 HTTPS 代理或改用其他服务。
+const DefaultIPAPIBaseURL = "http://ip-api.com"
+
+// IPAPIProvider 通过 ip-api.com 风格的接口查询 IP 归属地。
+//
+// 做成结构体而非包级函数，是为了让调用方可以替换端点与 http.Client（超时、代理、HTTPS）。
+type IPAPIProvider struct {
+	BaseURL string       // 形如 "http://ip-api.com"，结尾斜杠会被去掉
+	Client  *http.Client // 为 nil 时使用带 5s 超时的默认 client
+}
+
+// NewIPAPIProvider 创建一个 IPAPIProvider。
+//   - baseURL 为空时使用 DefaultIPAPIBaseURL
+//   - client 为 nil 时使用 &http.Client{Timeout: 5 * time.Second}
+func NewIPAPIProvider(baseURL string, client *http.Client) *IPAPIProvider {
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = DefaultIPAPIBaseURL
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
+	return &IPAPIProvider{
+		BaseURL: strings.TrimRight(baseURL, "/"),
+		Client:  client,
+	}
+}
+
+// Lookup 查询 ip 对应的中文地址，任何失败都返回「未知位置」。
+func (p *IPAPIProvider) Lookup(ip string) string {
 	// 判断是否是本地回环地址
 	if ip == "127.0.0.1" || ip == "::1" {
 		return "本地登录"
 	}
 
-	url := fmt.Sprintf("http://ip-api.com/json/%s?lang=zh-CN", ip)
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
+	baseURL := p.BaseURL
+	if baseURL == "" {
+		baseURL = DefaultIPAPIBaseURL
+	}
 
-	resp, err := http.Get(url)
+	url := fmt.Sprintf("%s/json/%s?lang=zh-CN", strings.TrimRight(baseURL, "/"), ip)
+
+	resp, err := client.Get(url)
 	if err != nil {
 		return "未知位置"
 	}
@@ -183,6 +221,17 @@ func GetLocationFromIP(ip string) string {
 	}
 
 	return strings.Join(parts, " ")
+}
+
+// defaultIPAPIProvider 供包级函数 GetLocationFromIP 使用
+var defaultIPAPIProvider = NewIPAPIProvider(DefaultIPAPIBaseURL, nil)
+
+// GetLocationFromIP 根据 IP 查询并返回中文格式地址。
+//
+// 使用默认 Provider（明文 HTTP 的公共端点）。生产环境建议改用
+// NewIPAPIProvider 注入 HTTPS 端点后调用 Lookup。
+func GetLocationFromIP(ip string) string {
+	return defaultIPAPIProvider.Lookup(ip)
 }
 
 // BuildSearchMap 根据QueryParams结构体构建搜索条件map
@@ -515,74 +564,6 @@ func CountStructFields(structure any) int {
 		return t.NumField()
 	}
 	return 0
-}
-
-// 1. 定义自定义类型 (关键：这能防止把 "b_attach_1" 错拼成 "b_attech_1")
-type AttachmentType string
-
-// 2. 定义常量
-const (
-	AttachAdApplication           AttachmentType = "b_attach_1"
-	AttachBusinessLicense         AttachmentType = "b_attach_2"
-	AttachApplicantID             AttachmentType = "b_attach_3"  // 申报人身份证
-	AttachDesignRendering         AttachmentType = "b_attach_4"  // 广告设计效果图
-	AttachActualSitePhoto         AttachmentType = "b_attach_5"  // 实景图
-	AttachDimensionalFloorPlan    AttachmentType = "b_attach_6"  // 规格平面图
-	AttachPropertyOrLease         AttachmentType = "b_attach_7"  // 产权证书或房屋租赁协议
-	AttachSafetyInspectionReport  AttachmentType = "b_attach_8"  // 广告安全检测报告
-	AttachOtherWrittenAgreements  AttachmentType = "b_attach_9"  // 其他书面协议
-	AttachVenueRentalContract     AttachmentType = "b_attach_10" // 场地租用合同
-	AttachStructuralDesignDrawing AttachmentType = "b_attach_11" // 结构设计图
-	AttachConstructionDrawing     AttachmentType = "b_attach_12" // 施工图
-	AttachConstructionSpecs       AttachmentType = "b_attach_13" // 施工说明
-	AttachConstructionUnitSafety  AttachmentType = "b_attach_14" // 施工单位安全资质
-	AttachSafetyCommitmentLetter  AttachmentType = "b_attach_15" // 安全承诺书
-	AttachConstructionPersonnel   AttachmentType = "b_attach_16" // 施工人员安全资质
-	AttachAuthorizerID            AttachmentType = "b_attach_17" // 授权人身份证
-	AttachPowerOfAttorney         AttachmentType = "b_attach_18" // 授权委托书
-	AttachOnSiteInspectionOpinion AttachmentType = "b_attach_19" // 现场核查意见
-	AttachFilingNotice            AttachmentType = "b_attach_20" // 备案通知书
-	AttachPlanningScreenshot      AttachmentType = "b_attach_21" // 规划相关截图
-)
-
-// 3. 定义 Map，Key 是 AttachmentType，Value 是包含 Zh 和 En 的结构体
-var AttachmentTypeMap = map[AttachmentType]struct {
-	Zh string
-	En string
-}{
-	AttachAdApplication:           {Zh: "广告设置申请书", En: "Advertising Application Form"},
-	AttachBusinessLicense:         {Zh: "企业商户营业执照", En: "Business License"},
-	AttachApplicantID:             {Zh: "申报人身份证", En: "Applicant's ID Card"},
-	AttachDesignRendering:         {Zh: "广告设计效果图", En: "Advertising Design Rendering"},
-	AttachActualSitePhoto:         {Zh: "实景图", En: "Actual Site Photo"},
-	AttachDimensionalFloorPlan:    {Zh: "规格平面图", En: "Dimensional Floor Plan"},
-	AttachPropertyOrLease:         {Zh: "产权证书或房屋租赁协议", En: "Property Certificate or Lease Agreement"},
-	AttachSafetyInspectionReport:  {Zh: "广告安全检测报告", En: "Advertising Safety Inspection Report"},
-	AttachOtherWrittenAgreements:  {Zh: "其他书面协议", En: "Other Written Agreements"},
-	AttachVenueRentalContract:     {Zh: "场地租用合同", En: "Venue Rental Contract"},
-	AttachStructuralDesignDrawing: {Zh: "结构设计图", En: "Structural Design Drawing"},
-	AttachConstructionDrawing:     {Zh: "施工图", En: "Construction Drawing"},
-	AttachConstructionSpecs:       {Zh: "施工说明", En: "Construction Specifications"},
-	AttachConstructionUnitSafety:  {Zh: "施工单位安全资质", En: "Construction Unit Safety Qualification"},
-	AttachSafetyCommitmentLetter:  {Zh: "安全承诺书", En: "Safety Commitment Letter"},
-	AttachConstructionPersonnel:   {Zh: "施工人员安全资质", En: "Construction Personnel Safety Qualification"},
-	AttachAuthorizerID:            {Zh: "授权人身份证", En: "Authorizer's ID Card"},
-	AttachPowerOfAttorney:         {Zh: "授权委托书", En: "Power of Attorney"},
-	AttachOnSiteInspectionOpinion: {Zh: "现场核查意见", En: "On-site Inspection Opinion"},
-	AttachFilingNotice:            {Zh: "备案通知书", En: "Filing Notice"},
-	AttachPlanningScreenshot:      {Zh: "规划相关截图", En: "Planning-related Screenshot"},
-}
-
-func GetName(key AttachmentType, lang string) string {
-	info, exists := AttachmentTypeMap[key]
-	if !exists {
-		return "未知附件类型"
-	}
-
-	if lang == "en" {
-		return info.En
-	}
-	return info.Zh // 默认返回中文
 }
 
 func ToTime(unixTime string) time.Time {

@@ -8,9 +8,16 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// BcryptHash 生成密码哈希。
+//
+// 注意：bcrypt 对超过 72 字节的输入会报错，此时返回空字符串与具体 error，
+// 调用方必须检查 error，不要只判断返回的字符串是否为空。
 func BcryptHash(password string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost+4)
-	logger.LogIf(err)
+	if err != nil {
+		logger.LogIf(err)
+		return "", err
+	}
 	return string(hash), nil
 }
 

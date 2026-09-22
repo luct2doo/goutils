@@ -257,7 +257,7 @@ func collectOldFields(v reflect.Value, t reflect.Type, tagName, gormTagName stri
 		sf := t.Field(i)
 		fv := v.Field(i)
 
-		// 递归处理匿名嵌入字段（如 data.Declare 内嵌 biz.Declare）
+		// 递归处理匿名嵌入字段（如内嵌的公共字段结构体）
 		if sf.Anonymous && fv.Kind() == reflect.Struct {
 			collectOldFields(fv, fv.Type(), tagName, gormTagName, values, columns)
 			continue

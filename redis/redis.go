@@ -16,12 +16,24 @@ import (
 const (
 	ModeStandalone = "standalone"
 	ModeSentinel   = "sentinel"
+
+	// unreachablePlaceholderAddr 是配置解析失败时使用的占位地址。
+	// 选一个必然连不上的端口（:0）而不是 127.0.0.1:6379，
+	// 是为了让误用「大声失败」，而不是静默连上开发者本机的 Redis。
+	unreachablePlaceholderAddr = "127.0.0.1:0"
 )
 
 // RedisClient Redis 客户端
 type RedisClient struct {
-	Client   *redis.Client
-	Context  context.Context
+	Client  *redis.Client
+	Context context.Context
+
+	// ConfigErr 在配置解析/校验失败时非 nil。
+	//
+	// 此时 Client 是一个不可达的占位客户端，任何操作都会返回连接错误。
+	// 调用方应检查该字段并中止启动，而不是继续使用。
+	ConfigErr error
+
 	redisCfg *config.Redis
 }
 
@@ -95,7 +107,10 @@ func NewRedisClientWithContext(ctx context.Context, redisCfg *config.Redis, logg
 	client, err := newGoRedisClient(redisCfg)
 	if err != nil {
 		logger.Error("Redis 配置错误", zap.Error(err))
-		rds.Client = redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+		// 不再静默回落到本机 Redis——那会把配置错误掩盖成「连上了但数据不对」。
+		// 改为记录 ConfigErr + 不可达占位客户端，让调用方显式发现并处理。
+		rds.ConfigErr = err
+		rds.Client = redis.NewClient(&redis.Options{Addr: unreachablePlaceholderAddr})
 		return rds
 	}
 	rds.Client = client

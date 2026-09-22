@@ -52,8 +52,16 @@ func (c *CaptchaService) GenerateCaptcha() (id, b64s, answer string, err error) 
 	return c.Base64Captcha.Generate()
 }
 
+// VerifyCaptcha 校验验证码。
+//
+// 存在一条可选的测试旁路：当 TestingEnabled 为 true、环境不是 production、
+// TestingKey 非空且 id 与 TestingKey 完全一致时直接放行。
+// 三个条件缺一不可——避免「忘记配置 TestingKey」导致空 id 就能通过。
 func (c *CaptchaService) VerifyCaptcha(id, answer string) (match bool) {
-	if !c.app.IsProduction() && id == c.captchaCfg.TestingKey {
+	if c.captchaCfg.TestingEnabled &&
+		c.captchaCfg.TestingKey != "" &&
+		!c.app.IsProduction() &&
+		id == c.captchaCfg.TestingKey {
 		return true
 	}
 	return c.Base64Captcha.Verify(id, answer, false)

@@ -119,7 +119,16 @@ type Captcha struct {
 	DotCount        int     `json:"dot_count" mapstructure:"dot_count" yaml:"dot_count"`
 	ExpireTime      int     `json:"expire_time" mapstructure:"expire_time" yaml:"expire_time"`
 	DebugExpireTime int     `json:"debug_expire_time" mapstructure:"debug_expire_time" yaml:"debug_expire_time"`
-	TestingKey      string  `json:"testing_key" mapstructure:"testing_key" yaml:"testing_key"`
+
+	// TestingEnabled 是否允许「测试用万能验证码」旁路。默认 false。
+	//
+	// 这是一条完全绕过验证码的通路，必须显式开启才会生效，
+	// 且仅在非 production 环境 + TestingKey 非空 + id 完全匹配时才放行。
+	// 请勿在生产环境开启。
+	TestingEnabled bool `json:"testing_enabled" mapstructure:"testing_enabled" yaml:"testing_enabled"`
+
+	// TestingKey 测试用万能验证码的 id（非答案），需配合 TestingEnabled 使用
+	TestingKey string `json:"testing_key" mapstructure:"testing_key" yaml:"testing_key"`
 }
 
 // Paging 分页相关配置

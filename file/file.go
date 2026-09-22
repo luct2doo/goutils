@@ -18,10 +18,10 @@ import (
 // 各项目的静态资源目录不同，建议在 NewFileService 时显式传入。
 const DefaultPublicRoot = "public"
 
-// UIDFunc 从 gin.Context 中提取「当前用户 ID」，用于把上传文件按用户分目录存放。
+// UserIDFunc 从 gin.Context 中提取「当前用户 ID」，用于把上传文件按用户分目录存放。
 //
-// 库本身不认识任何应用的鉴权上下文（例如 rugao 的 auth.CurrentUID），
-// 因此由调用方注入。传 nil 时统一落到 anonymous 目录。
+// 库本身不认识任何应用的鉴权上下文，因此由调用方注入。
+// 传 nil 时统一落到 anonymous 目录。
 type UserIDFunc func(c *gin.Context) string
 
 type FileService interface {
