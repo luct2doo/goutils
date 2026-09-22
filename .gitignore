@@ -21,4 +21,3 @@ go.work.sum
 .zed/
 
 /cache/cache_test.go
-/helpers/reuse_helpers_test.go

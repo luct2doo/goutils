@@ -6,7 +6,6 @@ import (
 )
 
 func TestRandomString(t *testing.T) {
-	var same bool
 	if got := RandomString(0); got != "" {
 		t.Errorf("RandomString(0) = %q, want empty", got)
 	}
@@ -28,7 +27,7 @@ func TestRandomString(t *testing.T) {
 	}
 
 	// 连续两次不应相同（crypto/rand 落回全局 math/rand 的概率极低）
-	if RandomString(32); same {
+	if a, b := RandomString(32), RandomString(32); a == b {
 		t.Error("连续两次 RandomString(32) 相同，随机源可疑")
 	}
 }
