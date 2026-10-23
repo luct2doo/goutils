@@ -52,16 +52,25 @@ func (c *CaptchaService) GenerateCaptcha() (id, b64s, answer string, err error) 
 	return c.Base64Captcha.Generate()
 }
 
-// VerifyCaptcha 校验验证码。
-//
-// 存在一条可选的测试旁路：当 TestingEnabled 为 true、环境不是 production、
-// TestingKey 非空且 id 与 TestingKey 完全一致时直接放行。
-// 三个条件缺一不可——避免「忘记配置 TestingKey」导致空 id 就能通过。
+// VerifyCaptcha 校验图形验证码。
 func (c *CaptchaService) VerifyCaptcha(id, answer string) (match bool) {
-	if c.captchaCfg.TestingEnabled &&
-		c.captchaCfg.TestingKey != "" &&
-		!c.app.IsProduction() &&
-		id == c.captchaCfg.TestingKey {
+	// TODO(REMOVE-BEFORE-RELEASE): 【调试后门，项目上线前必须删除】
+	//
+	// 作用：只要 captcha_id 等于配置项 captcha.testing_key（当前配置值是 "captcha_skip_test"），
+	// 无论 answer 填什么都直接判定通过。用于本地 / 联调用 Bruno、curl 调登录接口时，
+	// 不想每次都肉眼识别图形验证码。
+	//
+	// 风险（为什么要删）：
+	//   - 放行条件是 Env != "production"（IsProduction 是精确字符串比较），
+	//     env 写成 prod / Production / prd 或留空，都会让这个后门在生产环境生效；
+	//   - 预发 / 测试环境只要能被公网访问，验证码就等于不存在，撞库只剩登录失败节流一层防御。
+	//
+	// 清理清单（全局搜索关键字 REMOVE-BEFORE-RELEASE）：
+	//   1. 删除下面这个 if 分支；
+	//   2. 删除 config.Captcha 的 TestingKey 字段（goutils/config/captcha.go）；
+	//   3. 删除 server/config/config.yml 与 config.example.yml 里的 captcha.testing_key；
+	//   4. 清理前端 / 接口调试脚本里硬编码的 captcha_id: "captcha_skip_test"。
+	if !c.app.IsProduction() && id == c.captchaCfg.TestingKey {
 		return true
 	}
 	return c.Base64Captcha.Verify(id, answer, false)
