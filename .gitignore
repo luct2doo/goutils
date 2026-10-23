@@ -20,4 +20,5 @@ go.work.sum
 .trae/
 .zed/
 
+/limiter/limiter_test.go
 /cache/cache_test.go

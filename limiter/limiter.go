@@ -1,13 +1,12 @@
 package limiter
 
 import (
-	"fmt"
-	"strings"
-	"sync"
-
+	"errors"
 	"github.com/luct2doo/goutils/config"
 	"github.com/luct2doo/goutils/logger"
 	"github.com/luct2doo/goutils/redis"
+	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	limiterlib "github.com/ulule/limiter/v3"
@@ -18,13 +17,6 @@ type Limiter struct {
 	redisClient *redis.RedisClient
 	store       limiterlib.Store
 	limiters    sync.Map // 缓存不同 rate 的限流器实例
-
-	// initErr 在 store 初始化失败时非 nil。
-	//
-	// store 由 sredis.NewStoreWithOptions 在创建时就预加载 Lua 脚本，
-	// 因此 Redis 不可用时 store 会是 nil；若继续使用，后面会退化成
-	// 「nil 指针解引用」这种难以定位的崩溃。改为显式记录并在 CheckRate 返回。
-	initErr error
 }
 
 func NewLimiter(redisClient *redis.RedisClient, appCfg *config.App) *Limiter {
@@ -43,7 +35,6 @@ func NewLimiter(redisClient *redis.RedisClient, appCfg *config.App) *Limiter {
 	return &Limiter{
 		redisClient: redisClient,
 		store:       store,
-		initErr:     err,
 	}
 }
 
@@ -70,9 +61,12 @@ func (l *Limiter) GetKeyRouteWithIP(c *gin.Context) string {
 func (l *Limiter) CheckRate(c *gin.Context, key, formatted string) (limiterlib.Context, error) {
 	var ctx limiterlib.Context
 
-	// 0. store 初始化失败时直接返回错误，不再往下走（否则是 nil 解引用崩溃）
-	if l.initErr != nil {
-		return ctx, fmt.Errorf("limiter 不可用，store 初始化失败: %w", l.initErr)
+	// 0. store 为空说明初始化时连 Redis 失败（NewLimiter 只能记日志，构造函数没返回 error）。
+	// 这里提前拦下，否则 limiterlib 会在下面 nil 解引用 panic。
+	if l == nil || l.store == nil {
+		err := errors.New("限流器未初始化：Redis store 不可用")
+		logger.LogIf(err)
+		return ctx, err
 	}
 
 	// 1. 从缓存中获取或创建 Limiter 实例
@@ -83,17 +77,13 @@ func (l *Limiter) CheckRate(c *gin.Context, key, formatted string) (limiterlib.C
 			logger.LogIf(err)
 			return ctx, err
 		}
+		// limiterlib.New 返回的是 *Limiter（指针），存入 sync.Map 后类型也是 *Limiter，
+		// 下面断言必须用 *Limiter；断言成值类型会 panic:
+		// interface conversion: interface {} is *limiter.Limiter, not limiter.Limiter
 		limiterObjInterface, _ = l.limiters.LoadOrStore(formatted, limiterlib.New(l.store, rate))
 	}
 
-	// limiterlib.New 返回的是 *limiterlib.Limiter（Get/Peek 都定义在指针接收者上），
-	// 断言成值类型会 100% panic，这里必须断言指针。
-	limiterObj, ok := limiterObjInterface.(*limiterlib.Limiter)
-	if !ok {
-		err := fmt.Errorf("limiter 缓存中出现非预期类型: %T", limiterObjInterface)
-		logger.LogIf(err)
-		return ctx, err
-	}
+	limiterObj := limiterObjInterface.(*limiterlib.Limiter)
 
 	// 2. 执行限流检测
 	if c.GetBool("limiter-once") {

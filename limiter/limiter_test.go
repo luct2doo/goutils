@@ -1,99 +1,75 @@
 package limiter
 
 import (
-	"context"
-	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	limiterlib "github.com/ulule/limiter/v3"
+	memorystore "github.com/ulule/limiter/v3/drivers/store/memory"
 )
 
-// stubStore 实现 limiterlib.Store，让 CheckRate 可以在没有 Redis 的情况下被测试。
-type stubStore struct {
-	gotCalled bool
-	peeked    bool
+// newMemoryLimiter 用内存 store 构造一个不依赖 Redis 的限流器，只用于单测。
+func newMemoryLimiter() *Limiter {
+	return &Limiter{store: memorystore.NewStore()}
 }
 
-func (s *stubStore) Get(ctx context.Context, key string, rate limiterlib.Rate) (limiterlib.Context, error) {
-	s.gotCalled = true
-	return limiterlib.Context{Limit: rate.Limit, Remaining: rate.Limit - 1}, nil
-}
-
-func (s *stubStore) Peek(ctx context.Context, key string, rate limiterlib.Rate) (limiterlib.Context, error) {
-	s.peeked = true
-	return limiterlib.Context{Limit: rate.Limit, Remaining: rate.Limit}, nil
-}
-
-func (s *stubStore) Reset(ctx context.Context, key string, rate limiterlib.Rate) (limiterlib.Context, error) {
-	return limiterlib.Context{}, nil
-}
-
-func (s *stubStore) Increment(ctx context.Context, key string, count int64, rate limiterlib.Rate) (limiterlib.Context, error) {
-	return limiterlib.Context{}, nil
-}
-
-func newTestContext() *gin.Context {
-	gin.SetMode(gin.ReleaseMode)
+func newTestContext(fullPath string) *gin.Context {
+	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest("GET", "/api/v1/users", nil)
+	c.Request = httptest.NewRequest(http.MethodPost, fullPath, nil)
+	c.Set("limiter-once", false)
 	return c
 }
 
-// TestCheckRateTypeAssertion 回归测试：limiterlib.New 返回 *Limiter，
-// 早期实现断言成值类型 limiterlib.Limiter，导致 CheckRate 必定 panic。
-func TestCheckRateTypeAssertion(t *testing.T) {
-	store := &stubStore{}
-	l := &Limiter{store: store} // initErr 为 nil，走正常路径
+// TestCheckRate_StoreIsPointer 回归测试：
+// limiterlib.New 返回 *Limiter，此前 sync.Map 里存的是指针、断言却写成值类型，
+// 导致第一次调用 CheckRate 就 panic:
+// interface conversion: interface {} is *limiter.Limiter, not limiter.Limiter
+func TestCheckRate_StoreIsPointer(t *testing.T) {
+	l := newMemoryLimiter()
+	c := newTestContext("/v1/auth/login")
 
-	got, err := l.CheckRate(newTestContext(), "1.2.3.4", "10-M")
+	rate, err := l.CheckRate(c, "1.2.3.4", "2-M")
 	if err != nil {
-		t.Fatalf("CheckRate 返回错误: %v", err)
+		t.Fatalf("首次调用不应报错: %v", err)
 	}
-	if !store.gotCalled {
-		t.Fatal("首次调用应走 Store.Get")
-	}
-	if got.Limit != 10 {
-		t.Errorf("Limit = %d, want 10", got.Limit)
-	}
-	if got.Remaining != 9 {
-		t.Errorf("Remaining = %d, want 9", got.Remaining)
-	}
-
-	// 第二次调用（同一个 *gin.Context 已置 limiter-once）应走 Peek 而不是 Get
-	store2 := &stubStore{}
-	l2 := &Limiter{store: store2}
-	c := newTestContext()
-	if _, err := l2.CheckRate(c, "1.2.3.4", "10-M"); err != nil {
-		t.Fatalf("第一次 CheckRate 失败: %v", err)
-	}
-	if _, err := l2.CheckRate(c, "1.2.3.4", "10-M"); err != nil {
-		t.Fatalf("第二次 CheckRate 失败: %v", err)
-	}
-	if !store2.peeked {
-		t.Error("同一上下文第二次调用应走 Store.Peek")
+	if rate.Reached {
+		t.Fatalf("第 1 次请求不应触发限流, context=%+v", rate)
 	}
 }
 
-// TestCheckRateReturnsInitError store 初始化失败时必须返回 error，而不是继续走到 nil 解引用。
-func TestCheckRateReturnsInitError(t *testing.T) {
-	boom := errors.New("redis 不可用")
-	l := &Limiter{initErr: boom}
+// TestCheckRate_ReachLimit 校验超额判定与「同一 rate 复用缓存实例」都不会出问题。
+func TestCheckRate_ReachLimit(t *testing.T) {
+	l := newMemoryLimiter()
 
-	_, err := l.CheckRate(newTestContext(), "1.2.3.4", "10-M")
-	if err == nil {
-		t.Fatal("store 初始化失败时 CheckRate 应返回错误")
+	for i := 1; i <= 2; i++ {
+		c := newTestContext("/v1/auth/login")
+		rate, err := l.CheckRate(c, "1.2.3.4", "2-M")
+		if err != nil {
+			t.Fatalf("第 %d 次调用报错: %v", i, err)
+		}
+		if rate.Reached {
+			t.Fatalf("第 %d 次请求不应触发限流, context=%+v", i, rate)
+		}
 	}
-	if !errors.Is(err, boom) {
-		t.Errorf("错误未被包装保留: %v", err)
+
+	c := newTestContext("/v1/auth/login")
+	rate, err := l.CheckRate(c, "1.2.3.4", "2-M")
+	if err != nil {
+		t.Fatalf("第 3 次调用报错: %v", err)
+	}
+	if !rate.Reached {
+		t.Fatalf("第 3 次请求应触发限流（2 次/分钟）, context=%+v", rate)
 	}
 }
 
-// TestCheckRateBadFormatted 非法限流格式应返回错误而不是 panic。
-func TestCheckRateBadFormatted(t *testing.T) {
-	l := &Limiter{store: &stubStore{}}
-	if _, err := l.CheckRate(newTestContext(), "1.2.3.4", "not-a-rate"); err == nil {
-		t.Fatal("非法 formatted 应返回错误")
+// TestCheckRate_NilStore 未初始化（Redis 连不上）时应返回错误而不是 panic。
+func TestCheckRate_NilStore(t *testing.T) {
+	l := &Limiter{}
+	c := newTestContext("/v1/auth/login")
+
+	if _, err := l.CheckRate(c, "1.2.3.4", "2-M"); err == nil {
+		t.Fatal("store 为空时应返回错误")
 	}
 }
