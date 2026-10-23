@@ -139,3 +139,21 @@ type Paging struct {
 	UrlQueryOrder   string `json:"url_query_order" mapstructure:"url_query_order" yaml:"url_query_order"`
 	UrlQueryPerPage string `json:"url_query_per_page" mapstructure:"url_query_per_page" yaml:"url_query_per_page"`
 }
+
+// RateLimit 接口限流与登录失败节流配置。
+//
+// Captcha / Login 的值是 ulule/limiter 的格式化写法「次数-周期」，
+// 周期支持 S(秒) / M(分) / H(时)，例如 "30-M" 表示每个 IP 每分钟 30 次；
+// 留空表示该路由不限流（测试或内网部署时可以用）。
+type RateLimit struct {
+	// Captcha 验证码接口限额，键是「路由 + IP」
+	Captcha string `json:"captcha" mapstructure:"captcha" yaml:"captcha"`
+	// Login 登录接口限额，键是「路由 + IP」
+	Login string `json:"login" mapstructure:"login" yaml:"login"`
+	// LoginFailLimit 同一登录名在 LoginFailWindow 内允许的失败次数，达到后临时拒绝；
+	// 0 或负数表示关闭该检查。注意统计基于 jk_login_records，被拒绝的请求本身不再计数，
+	// 否则攻击者可以靠持续尝试把账号永久锁死。
+	LoginFailLimit int `json:"login_fail_limit" mapstructure:"login_fail_limit" yaml:"login_fail_limit"`
+	// LoginFailWindow 登录失败次数的统计窗口（滑动窗口，不是固定周期）
+	LoginFailWindow time.Duration `json:"login_fail_window" mapstructure:"login_fail_window" yaml:"login_fail_window"`
+}
