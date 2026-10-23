@@ -82,6 +82,14 @@ func Abort500(c *gin.Context, msg ...string) {
 	})
 }
 
+// Abort429 响应 429（请求过多），用于限流与登录失败节流
+func Abort429(c *gin.Context, msg ...string) {
+	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+		"message": defaultMessage("接口请求太频繁，请稍后再试", msg...),
+		"code":    http.StatusTooManyRequests,
+	})
+}
+
 // BadRequest 响应 400，传参 err 对象，未传参 msg 时使用默认消息
 // 在解析用户请求，请求的格式或者方法不符合预期时调用
 func BadRequest(c *gin.Context, err error, msg ...string) {
