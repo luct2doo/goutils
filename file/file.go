@@ -18,11 +18,11 @@ import (
 // 各项目的静态资源目录不同，建议在 NewFileService 时显式传入。
 const DefaultPublicRoot = "public"
 
-// UserIDFunc 从 gin.Context 中提取「当前用户 ID」，用于把上传文件按用户分目录存放。
+// UIDFunc 从 gin.Context 中提取「当前用户 ID」，用于把上传文件按用户分目录存放。
 //
-// 库本身不认识任何应用的鉴权上下文，因此由调用方注入。
-// 传 nil 时统一落到 anonymous 目录。
-type UserIDFunc func(c *gin.Context) string
+// 库本身不认识任何应用的鉴权上下文（例如 rugao 的 auth.CurrentUID），
+// 因此由调用方注入。传 nil 时统一落到 anonymous 目录。
+type UIDFunc func(c *gin.Context) string
 
 type FileService interface {
 	Put(data []byte, to string) error
@@ -30,14 +30,17 @@ type FileService interface {
 	FileNameWithoutExtension(fileName string) string
 	SaveUploadAvatar(c *gin.Context, file *multipart.FileHeader) (string, error)
 	SaveUploadImg(c *gin.Context, file *multipart.FileHeader, dest string) (string, error)
+	// SaveUploadImgCompressed 与 SaveUploadImg 相同，但落盘后会把过大的 JPG/PNG
+	// 等比缩小到 maxEdge 像素内并重新编码。用于手机直出的资质照片。
+	SaveUploadImgCompressed(c *gin.Context, file *multipart.FileHeader, dest string, maxEdge, quality int) (string, error)
 	RandomNameFromUploadFile(file *multipart.FileHeader) string
 }
 
 // fileService 实现 FileService 接口
 type fileService struct {
-	app        *app.App
-	root       string     // 上传文件落盘根目录
-	userIDFunc UserIDFunc // 当前用户 ID 提取函数，可为 nil
+	app     *app.App
+	root    string  // 上传文件落盘根目录
+	uidFunc UIDFunc // 当前用户 ID 提取函数，可为 nil
 }
 
 // NewFileService 创建文件服务实例
@@ -48,14 +51,14 @@ type fileService struct {
 //
 // 返回:
 //   - FileService: 文件服务接口实例
-func NewFileService(app *app.App, root string, userIDFunc UserIDFunc) FileService {
+func NewFileService(app *app.App, root string, uidFunc UIDFunc) FileService {
 	if root == "" {
 		root = DefaultPublicRoot
 	}
 	return &fileService{
-		app:        app,
-		root:       root,
-		userIDFunc: userIDFunc,
+		app:     app,
+		root:    root,
+		uidFunc: uidFunc,
 	}
 }
 
@@ -93,13 +96,13 @@ func (fs *fileService) FileNameWithoutExtension(fileName string) string {
 	return strings.TrimSuffix(fileName, filepath.Ext(fileName))
 }
 
-// currentUID 取当前用户 ID，无 userIDFunc 或取不到时返回 "anonymous"
+// currentUID 取当前用户 ID，无 uidFunc 或取不到时返回 "anonymous"
 func (fs *fileService) currentUID(c *gin.Context) string {
-	if fs.userIDFunc == nil {
+	if fs.uidFunc == nil {
 		return "anonymous"
 	}
-	if userID := fs.userIDFunc(c); userID != "" {
-		return userID
+	if uid := fs.uidFunc(c); uid != "" {
+		return uid
 	}
 	return "anonymous"
 }
@@ -157,4 +160,86 @@ func (fs *fileService) SaveUploadImg(c *gin.Context, file *multipart.FileHeader,
 		return "", err
 	}
 	return fs.app.URL(dirName + filepath.Base(fullPath)), nil
+}
+
+// SaveUploadImgCompressed 保存图片并压缩。
+//
+// 手机直出的照片常是 4,000×3,000 / 3~8MB，一张资质照片就这样存下来，
+// 一单 18 份材料就是上百兆。这里按「长边 ≤ maxEdge」等比缩小，JPG 再以
+// quality 重编码；PNG 保留无损格式，只做尺寸收缩。
+//
+// 压缩失败不回滚：原图已经落盘，能打开比报错更有价值；压缩后的文件
+// 只有在比原图更小时才替换，避免小图被重编码后反而变大。
+func (fs *fileService) SaveUploadImgCompressed(c *gin.Context, file *multipart.FileHeader, dest string, maxEdge, quality int) (string, error) {
+	dirName, fullPath, err := fs.saveUpload(c, file, dest)
+	if err != nil {
+		return "", err
+	}
+	// 默认值兜底：调用方传 0 时不至于把图片缩成 1px。
+	if maxEdge <= 0 {
+		maxEdge = 2400
+	}
+	if quality <= 0 || quality > 100 {
+		quality = 85
+	}
+	if err := compressUploadedImage(fullPath, maxEdge, quality); err != nil {
+		// 不是图片 / 扩展名伪装 / 解码失败：保留原文件，交给后续流程判断。
+		return fs.app.URL(dirName + filepath.Base(fullPath)), nil
+	}
+	return fs.app.URL(dirName + filepath.Base(fullPath)), nil
+}
+
+// compressUploadedImage 就地把过大的 JPG/PNG 缩小并重编码。
+//
+// 只处理 .jpg/.jpeg/.png：WebP 在 imaging 里只有解码器、没有编码器，
+// 强行转成 JPEG 会改扩展名，反而让库里路径和实际格式不一致。
+func compressUploadedImage(fullPath string, maxEdge, quality int) error {
+	ext := strings.ToLower(filepath.Ext(fullPath))
+	if ext != ".jpg" && ext != ".jpeg" && ext != ".png" {
+		return nil
+	}
+
+	before, err := os.Stat(fullPath)
+	if err != nil {
+		return err
+	}
+
+	img, err := imaging.Open(fullPath, imaging.AutoOrientation(true))
+	if err != nil {
+		return err
+	}
+
+	bounds := img.Bounds()
+	tooLarge := bounds.Dx() > maxEdge || bounds.Dy() > maxEdge
+	// 已经很小、也不大的图，重编码只会掉画质。
+	if !tooLarge && before.Size() <= 1<<20 {
+		return nil
+	}
+	if tooLarge {
+		img = imaging.Fit(img, maxEdge, maxEdge, imaging.Lanczos)
+	}
+
+	// imaging.Save 按扩展名选编码器：临时文件名必须保留 .jpg/.png 结尾，
+	// 否则会报 "unsupported image format"。
+	tmpPath := fullPath + ".compressed" + ext
+	if ext == ".png" {
+		err = imaging.Save(img, tmpPath)
+	} else {
+		err = imaging.Save(img, tmpPath, imaging.JPEGQuality(quality))
+	}
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	after, err := os.Stat(tmpPath)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if after.Size() >= before.Size() {
+		_ = os.Remove(tmpPath)
+		return nil
+	}
+	return os.Rename(tmpPath, fullPath)
 }

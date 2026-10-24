@@ -66,9 +66,9 @@ func Abort403(c *gin.Context, msg ...string) {
 	})
 }
 
-// Abort409 响应 409
+// Abort409 响应 409（并发冲突：提交时资源已被别人改过）
 func Abort409(c *gin.Context, msg ...string) {
-	c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+	c.AbortWithStatusJSON(http.StatusConflict, gin.H{
 		"message": defaultMessage("服务器数据源有冲突", msg...),
 		"code":    http.StatusConflict,
 	})
