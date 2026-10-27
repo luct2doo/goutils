@@ -179,6 +179,105 @@ func (h *RSAHelper) DecryptWithPrivateKey(ciphertextBase64 string, privateKeyPEM
 	return string(plaintextBytes), nil
 }
 
+// EncryptWithPublicKeyPKCS1v15 使用公钥按 PKCS#1 v1.5 填充加密，并自动分块。
+//
+// 【什么时候用它，而不是 EncryptWithPublicKey】：
+// EncryptWithPublicKey 走的是 OAEP 填充，密文与 PKCS#1 v1.5 互不兼容 ——
+// 对方用 PHP `openssl_public_encrypt()`（默认 OPENSSL_PKCS1_PADDING）、
+// Java `Cipher.getInstance("RSA/ECB/PKCS1Padding")`、Node `crypto.publicEncrypt` 默认值
+// 加密过来的数据，**只能**用本函数解；反过来也一样。
+//
+// 【为什么要分块】：
+// 单个 RSA 块能加密的明文上限是 `密钥字节数 - 11`（2048 位 = 245 字节，1024 位 = 117 字节）。
+// 超长明文必须切块、逐块加密、再把密文按顺序拼接后统一 Base64。
+// 这与 PHP 里 `foreach (str_split($data, 117) as $chunk)` 的做法完全一致，
+// 块大小由密钥自动推导，不需要调用方写死 117。
+//
+// 【参数说明】：
+//   - plaintext: 明文（可为空串，返回空串）
+//   - publicKeyPEM: PEM 格式公钥（PKIX "PUBLIC KEY" 或 PKCS#1 "RSA PUBLIC KEY"）
+//
+// 【返回值】：
+//   - 所有分块密文拼接后的 Base64 字符串
+//   - error: 解析公钥失败或加密失败
+func (h *RSAHelper) EncryptWithPublicKeyPKCS1v15(plaintext string, publicKeyPEM string) (string, error) {
+	publicKey, err := parsePublicKey(publicKeyPEM)
+	if err != nil {
+		return "", err
+	}
+
+	if plaintext == "" {
+		return "", nil
+	}
+
+	// 单块明文上限：k - 11（PKCS#1 v1.5 需要 0x00 0x02 + 至少 8 字节随机填充 + 0x00）
+	blockSize := publicKey.Size() - 11
+	if blockSize <= 0 {
+		return "", errors.New("密钥长度过短，无法使用 PKCS#1 v1.5 填充")
+	}
+
+	plain := []byte(plaintext)
+	blocks := (len(plain) + blockSize - 1) / blockSize
+	ciphertext := make([]byte, 0, blocks*publicKey.Size())
+
+	for offset := 0; offset < len(plain); offset += blockSize {
+		end := offset + blockSize
+		if end > len(plain) {
+			end = len(plain)
+		}
+		encrypted, err := rsa.EncryptPKCS1v15(rand.Reader, publicKey, plain[offset:end])
+		if err != nil {
+			return "", fmt.Errorf("RSA(PKCS#1 v1.5) 分块加密失败 (第 %d 块): %w", offset/blockSize+1, err)
+		}
+		ciphertext = append(ciphertext, encrypted...)
+	}
+
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+// DecryptWithPrivateKeyPKCS1v15 使用私钥按 PKCS#1 v1.5 填充解密，并自动分块。
+//
+// 【说明】：与 EncryptWithPublicKeyPKCS1v15 配对使用，用于解开 PHP `openssl_private_decrypt()`
+// 或任何 PKCS#1 v1.5 实现产生的密文。密文长度必须能被密钥字节数整除，否则说明数据被截断或不是分块格式。
+//
+// 【⚠️ 安全提示】：
+// PKCS#1 v1.5 解密存在 padding oracle 风险（攻击者能通过区分「填充错误」与「内容错误」逐步解出明文）。
+// 若本函数用于对外的解密接口，**务必**把成功与失败统一成同一个错误返回，不要向外暴露具体原因。
+func (h *RSAHelper) DecryptWithPrivateKeyPKCS1v15(ciphertextBase64 string, privateKeyPEM string) (string, error) {
+	privateKey, err := parsePrivateKey(privateKeyPEM)
+	if err != nil {
+		return "", err
+	}
+
+	if ciphertextBase64 == "" {
+		return "", nil
+	}
+
+	ciphertext, err := base64.StdEncoding.DecodeString(ciphertextBase64)
+	if err != nil {
+		return "", fmt.Errorf("Base64 解码失败: %w", err)
+	}
+
+	blockSize := privateKey.Size()
+	if len(ciphertext)%blockSize != 0 {
+		return "", fmt.Errorf("密文长度 %d 不是密钥块长 %d 的整数倍（数据被截断或分块格式不符）",
+			len(ciphertext), blockSize)
+	}
+
+	plain := make([]byte, 0, len(ciphertext))
+	for offset := 0; offset < len(ciphertext); offset += blockSize {
+		decrypted, err := rsa.DecryptPKCS1v15(rand.Reader, privateKey,
+			ciphertext[offset:offset+blockSize])
+		if err != nil {
+			return "", fmt.Errorf("RSA(PKCS#1 v1.5) 分块解密失败 (第 %d 块): %w",
+				offset/blockSize+1, err)
+		}
+		plain = append(plain, decrypted...)
+	}
+
+	return string(plain), nil
+}
+
 // =============================================================================
 // 3. 签名与验签模块 (用于身份认证和数据完整性校验)
 // =============================================================================
