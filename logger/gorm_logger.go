@@ -91,29 +91,32 @@ func (l GormLogger) Trace(ctx context.Context, begin time.Time, fc func() (strin
 	l.logger().Debug("Database Query", logFields...)
 }
 
-// logger 内用的辅助方法，确保 Zap 内置信息 Caller 的准确性（如 paginator/paginator.go:148）
+// logger 返回一个 caller 指向「触发本次 GORM 回调的业务代码」的 zap logger。
+//
+// 换算关系：本方法里 runtime.Caller(i) 的 0 号帧是本方法、1 号帧是 Trace/Info/... ，
+// 2 号帧起才是调用方（GORM 内部帧或业务代码）。zap 在 skip=0 时把 caller 记为
+// 1 号帧（即 l.logger().Debug(...) 所在行），因此要让 caller 落到第 i 帧，
+// 需要 AddCallerSkip(i-1)。
+//
+// 旧实现用 AddCallerSkip(-2) 补偿基础 logger 的 AddCallerSkip(2)，
+// 两处魔法数强耦合；基础 logger 一改（或 Go 版本改变内联/栈形态）就整体偏移，
+// caller 会指到 testing.go / asm_arm64.s。现在只依赖本方法自己的栈，不再耦合。
 func (l GormLogger) logger() *zap.Logger {
-
-	// 跳过 gorm 内置的调用
 	var (
 		gormPackage    = filepath.Join("gorm.io", "gorm")
 		zapgormPackage = filepath.Join("moul.io", "zapgorm2")
 	)
 
-	// 减去一次封装，以及一次在 logger 初始化里添加 zap.AddCallerSkip(1)
-	clone := l.ZapLogger.WithOptions(zap.AddCallerSkip(-2))
-
 	for i := 2; i < 15; i++ {
 		_, file, _, ok := runtime.Caller(i)
-		switch {
-		case !ok:
-		case strings.HasSuffix(file, "_test.go"):
-		case strings.Contains(file, gormPackage):
-		case strings.Contains(file, zapgormPackage):
-		default:
-			// 返回一个附带跳过行号的新的 zap logger
-			return clone.WithOptions(zap.AddCallerSkip(i))
+		if !ok {
+			break
 		}
+		// 跳过 GORM 内部帧；测试文件属于业务调用方，不能跳过，否则 caller 会落到 testing 框架
+		if strings.Contains(file, gormPackage) || strings.Contains(file, zapgormPackage) {
+			continue
+		}
+		return l.ZapLogger.WithOptions(zap.AddCallerSkip(i - 1))
 	}
 	return l.ZapLogger
 }

@@ -37,6 +37,12 @@ type JWT struct {
 	RefreshThreshold int64  `json:"refresh_threshold" mapstructure:"refresh_threshold" yaml:"refresh_threshold"`
 	TTL              int64  `json:"ttl" mapstructure:"ttl" yaml:"ttl"`
 	DebugTTL         int64  `json:"debug_ttl" mapstructure:"debug_ttl" yaml:"debug_ttl"`
+
+	// MaxSessionAge 从登录时刻（claims.auth_time）算起的绝对会话上限，单位分钟。
+	// 达到上限后 token 即使尚未过期也不可再用、不可续签，必须重新登录。
+	// 与 MaxRefreshTime（过期后的续签宽限）相互独立，绝对上限优先。
+	// 0 表示不限制，保持旧配置行为；建议设为 10080（7 天）一类的值。
+	MaxSessionAge int64 `json:"max_session_age" mapstructure:"max_session_age" yaml:"max_session_age"`
 }
 
 // Redis Redis 连接配置（支持 standalone / sentinel）

@@ -30,6 +30,11 @@ type Paging struct {
 	PerPage     int   `json:"per_page"`     // 每页条数
 	TotalPage   int   `json:"total_page"`   // 总页数
 	TotalCount  int64 `json:"total_count"`  // 总条数
+
+	// 以下两项仅游标模式有值。游标模式不执行 COUNT(*)，
+	// 因此 CurrentPage / TotalPage / TotalCount 均为 0。
+	NextCursor string `json:"next_cursor,omitempty"` // 下一页游标，空串表示没有更多数据
+	HasMore    bool   `json:"has_more,omitempty"`    // 是否还有下一页
 }
 
 // Param 分页请求参数，由 Handler 层从 HTTP 或 gRPC 请求中提取后传入
@@ -43,6 +48,19 @@ type Param struct {
 	// 非空时 Sort 必须命中其中之一（区分大小写）；为空时仅做字形校验。
 	// 注意：白名单里的值同样要通过字形校验，避免把注入片段当成合法候选。
 	AllowedSorts []string
+
+	// TieBreaker 第二排序键，保证 ORDER BY 唯一稳定，避免翻页重复/漏数据。
+	// 零值默认 "id"，方向与 Order 一致；传 "-" 表示关闭（仅当 Sort 本身唯一时才可关闭）。
+	// 字段名同样过字形校验，但不受 AllowedSorts 限制——它是内部追加的主键。
+	TieBreaker string
+
+	// Cursor 非空时切换到游标（keyset）分页：忽略 Page / Offset，也不再执行 COUNT(*)。
+	// 用 ParseCursor 从请求里的 cursor 参数解码；空串会返回 nil，即回到 OFFSET 模式。
+	Cursor *Cursor
+
+	// CursorExtractor 从结果行提取游标值；为空时使用 DefaultCursorExtractor(Sort, TieBreaker)。
+	// 排序字段是时间或自定义类型时，建议传自定义实现。
+	CursorExtractor CursorExtractor
 }
 
 // BuildParam 从请求数据构建分页参数
@@ -65,6 +83,7 @@ type Paginator struct {
 	TotalPage  int    // 总页数 = TotalCount/PerPage
 	Sort       string // 排序规则
 	Order      string // 排序顺序
+	TieBreaker string // 第二排序键，保证排序唯一稳定
 
 	query *gorm.DB // db query 句柄
 	cfg   *config.Paging
@@ -89,9 +108,14 @@ func (p *Paginator) Paginate(db *gorm.DB, data any, param Param) *Paging {
 
 	instance.initProperties(param)
 
+	// 游标模式：不 OFFSET、不 COUNT(*)，靠上一页最后一条的排序值定位
+	if param.Cursor != nil {
+		return instance.paginateByCursor(data, param)
+	}
+
 	// 查询数据库
 	err := instance.query.Preload(clause.Associations). // 读取关联
-								Order(instance.Sort + " " + instance.Order). // 排序
+								Order(instance.orderClause()). // 主排序 + tie-breaker
 								Limit(instance.PerPage).
 								Offset(instance.Offset).
 								Find(data).
@@ -123,6 +147,9 @@ func (p *Paginator) initProperties(param Param) {
 	// 这里是安全边界——Sort/Order 会被拼进 Order() 的 SQL 片段。
 	p.Sort = sanitizeSort(param.Sort, param.AllowedSorts)
 
+	// 第二排序键：默认 id，方向跟随 Order，保证排序结果唯一稳定。
+	p.TieBreaker = sanitizeTieBreaker(param.TieBreaker)
+
 	// 核心修复：必须先计算总条数和总页数，再计算当前页和 Offset
 	p.TotalCount = p.getTotalCount()
 	p.TotalPage = p.getTotalPage()
@@ -136,6 +163,29 @@ func (p *Paginator) initProperties(param Param) {
 	} else {
 		p.Offset = 0
 	}
+}
+
+// orderClause 生成 ORDER BY 片段。只要主排序键不是唯一的，就必须追加 tie-breaker，
+// 否则数据库对相同排序值的行返回顺序不确定，OFFSET 翻页会重复 / 漏数据。
+// 第二排序键方向与主排序一致，这样 WHERE 的 keyset 条件才能用同一个比较符。
+func (p *Paginator) orderClause() string {
+	if !hasTieBreaker(p.Sort, p.TieBreaker) {
+		return p.Sort + " " + p.Order
+	}
+	return p.Sort + " " + p.Order + ", " + p.TieBreaker + " " + p.Order
+}
+
+// sanitizeTieBreaker 校验第二排序键：非法输入回退为 "id"，"-" 表示关闭。
+// 这里不套 AllowedSorts——tie-breaker 是内部追加的主键，不由请求直接指定。
+func sanitizeTieBreaker(tie string) string {
+	tie = strings.TrimSpace(tie)
+	if tie == "-" {
+		return ""
+	}
+	if tie == "" || !sortKeyPattern.MatchString(tie) {
+		return defaultSortField
+	}
+	return tie
 }
 
 // sanitizeSort 校验排序字段，不合法时回退为 defaultSortField。

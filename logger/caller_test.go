@@ -113,6 +113,30 @@ func TestCallerAccuracyGormAdapter(t *testing.T) {
 	}
 }
 
+// TestCallerAccuracyOtherPackageFuncs 覆盖其他形态的包级函数（String / JSON / Dump）。
+// 它们都走 namedLogger()，任何一个漏改回 base() 都会在这里暴露。
+func TestCallerAccuracyOtherPackageFuncs(t *testing.T) {
+	_, logFile := newTestLogger(t)
+
+	want := expectCaller()
+	InfoString("Probe", "k", "v") // ← caller 必须指向这一行
+	if got := callerOf(t, logFile, 0); got != want {
+		t.Errorf("logger.InfoString 的 caller = %q, want %q", got, want)
+	}
+
+	want = expectCaller()
+	InfoJSON("Probe", "data", map[string]int{"n": 1}) // ← caller 必须指向这一行
+	if got := callerOf(t, logFile, 1); got != want {
+		t.Errorf("logger.InfoJSON 的 caller = %q, want %q", got, want)
+	}
+
+	want = expectCaller()
+	Dump(map[string]int{"n": 1}) // ← caller 必须指向这一行
+	if got := callerOf(t, logFile, 2); got != want {
+		t.Errorf("logger.Dump 的 caller = %q, want %q", got, want)
+	}
+}
+
 // TestPackageFuncBeforeNewLogger 回归测试：NewLogger 之前调用包级函数不能 panic。
 //
 // 兜底 logger 生效时错误会写到 stderr（这里不关心内容），关键是「不 panic」。

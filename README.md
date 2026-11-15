@@ -22,7 +22,7 @@
 | `database` | GORM 数据库封装 |
 | `limiter` | 基于 ulule/limiter 的限流器 |
 | `captcha` | 图形验证码（base64Captcha + Redis 存储） |
-| `paginator` | 分页器（GORM 查询 + 排序字段白名单校验） |
+| `paginator` | 分页器（GORM 查询 + 排序字段白名单 + tie-breaker 稳定排序 + OFFSET / keyset 游标两种模式） |
 | `response` | 统一 HTTP 响应封装 |
 | `file` | 文件上传 / 头像裁剪（gin + imaging） |
 | `helpers` | 通用辅助函数（随机串、时间转换、GORM Updates 构造等） |
@@ -85,9 +85,33 @@ config → app.NewApp → logger.NewLogger → jwt / redis / database / cache / 
 - 万一漏调 `NewLogger`，包级函数会退化为「写 stderr 的兜底 logger」而**不会 panic**——出现这类 stderr 输出即说明初始化顺序有问题。
 - 日志的 `caller` 字段依赖跳帧设置：包级函数 `logger.Info(...)` 与实例方法 `l.Info(...)` 都已校准到真实调用点，改动 logger 初始化时请一并跑 `logger` 包的测试。
 
+### 游标分页（keyset）
+
+`Param.Cursor` 非空即启用游标模式：忽略 `Page` / `Offset`，不执行 `COUNT(*)`，
+`Paging` 里的 `CurrentPage` / `TotalPage` / `TotalCount` 均为 0，改用 `NextCursor` + `HasMore` 驱动翻页。
+建议给排序键建联合索引，例如 `(created_at DESC, id DESC)`。
+
+```go
+cursor, err := paginator.ParseCursor(c.Query("cursor")) // 空串 → nil，自动回到 OFFSET 模式
+if err != nil { /* 返回 400 */ }
+
+paging := p.Paginate(db, &users, paginator.Param{
+    PerPage:      20,
+    Sort:         "created_at",
+    Order:        "desc",
+    TieBreaker:   "id", // 零值即默认 id，生成 ORDER BY created_at DESC, id DESC
+    AllowedSorts: []string{"created_at", "id"},
+    Cursor:       cursor,
+})
+// paging.NextCursor 放进下一次请求的 cursor；paging.HasMore 决定是否继续
+```
+
+`Param` 新增了字段，请用 `BuildParam` 或命名字段构造，不要用位置初始化。
+
 ## 安全注意事项
 
-- `paginator.Param.Sort` / `Order` 会被拼进 SQL 的 `ORDER BY` 片段。库内已做字形校验（`column` 或 `table.column`）+ 可选白名单（`Param.AllowedSorts`），请不要在调用前绕过本库自行拼接。
+- `paginator.Param.Sort` / `Order` / `TieBreaker` 会被拼进 SQL 的 `ORDER BY` 与游标 `WHERE` 片段。库内已做字形校验（`column` 或 `table.column`）+ 可选白名单（`Param.AllowedSorts`，仅约束 `Sort`），请不要在调用前绕过本库自行拼接。游标里的值一律通过 `?` 绑定；`ParseCursor` 返回的游标字符串来自客户端，不可信，不要用于鉴权或拼接 SQL。
+- 游标分页的排序字段若为 NULL 会漏行，请用 NOT NULL 列；时间类型的排序字段建议业务侧自定义 `CursorExtractor`，把值规范成数据库可比较的格式。
 - `captcha` 的测试旁路需同时满足 `TestingEnabled=true`、非 production 环境、`TestingKey` 非空且 id 完全匹配。生产环境请保持 `TestingEnabled=false`。
 - `database.DeleteAllTables`、`redis.FlushDB`、`cache.Flush` 均为破坏性操作，请只在测试环境调用。
 - `helpers.GetLocationFromIP` 默认使用 `http://ip-api.com`（明文 HTTP，受免费额度限制）。生产环境请用 `helpers.NewIPAPIProvider` 注入 HTTPS 端点或自建代理。
