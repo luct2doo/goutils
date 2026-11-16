@@ -150,6 +150,13 @@ func (p *Paginator) initProperties(param Param) {
 	// 第二排序键：默认 id，方向跟随 Order，保证排序结果唯一稳定。
 	p.TieBreaker = sanitizeTieBreaker(param.TieBreaker)
 
+	// 游标模式到此为止：不 COUNT(*)、不算页码、不算 Offset。
+	// COUNT(*) 在 keyset 分页里没有语义，而且是一次额外的全量扫描，
+	// 游标模式下 TotalCount / TotalPage / CurrentPage 保持 0（与 Paging 注释一致）。
+	if param.Cursor != nil {
+		return
+	}
+
 	// 核心修复：必须先计算总条数和总页数，再计算当前页和 Offset
 	p.TotalCount = p.getTotalCount()
 	p.TotalPage = p.getTotalPage()

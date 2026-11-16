@@ -167,3 +167,41 @@ func TestFinishCursorPage(t *testing.T) {
 		t.Errorf("非切片输入应返回 (false, \"\")，实际 (%v, %q)", h, n)
 	}
 }
+
+// 游标模式不应执行 COUNT(*)：query 故意留 nil，一旦走到 getTotalCount 就会 panic。
+// 同时 TotalCount / TotalPage / Page / Offset 必须保持零值，与 Paging 注释一致。
+func TestInitPropertiesSkipsCountInCursorMode(t *testing.T) {
+	p := &Paginator{}
+	p.initProperties(Param{
+		Page:    3,
+		PerPage: 20,
+		Sort:    "created_at",
+		Order:   "asc",
+		Cursor:  &Cursor{Sort: "2026-01-02"},
+	})
+
+	if p.TotalCount != 0 || p.TotalPage != 0 || p.Page != 0 || p.Offset != 0 {
+		t.Fatalf("游标模式应跳过计数与页码: TotalCount=%d TotalPage=%d Page=%d Offset=%d",
+			p.TotalCount, p.TotalPage, p.Page, p.Offset)
+	}
+	if p.PerPage != 20 || p.Sort != "created_at" || p.Order != "asc" || p.TieBreaker != "id" {
+		t.Fatalf("游标模式仍需初始化查询属性: %+v", p)
+	}
+}
+
+// 时间类型主键/排序字段走 JSON 往返后是字符串，ParseCursor 不会还原成 time.Time，
+// 业务侧必须自己转回 time.Time 才能和数据库列比较。这里固化这一契约。
+func TestCursorTimeValueRoundTripStaysString(t *testing.T) {
+	ts := "2026-11-16T12:00:00.123456789+08:00"
+	enc, err := EncodeCursor(&Cursor{Sort: ts, Tie: int64(7)})
+	if err != nil {
+		t.Fatalf("EncodeCursor: %v", err)
+	}
+	c, err := ParseCursor(enc)
+	if err != nil {
+		t.Fatalf("ParseCursor: %v", err)
+	}
+	if s, ok := c.Sort.(string); !ok || s != ts {
+		t.Fatalf("Sort 应保持字符串形态，实际 %T %v", c.Sort, c.Sort)
+	}
+}
