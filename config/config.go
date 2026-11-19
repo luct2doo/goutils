@@ -30,13 +30,15 @@ type Log struct {
 
 // JWT JWT 签发与校验配置
 type JWT struct {
-	Secret           string `json:"secret" mapstructure:"secret" yaml:"secret"`
-	ExpireTime       int64  `json:"expire_time" mapstructure:"expire_time" yaml:"expire_time"`
-	MaxRefreshTime   int64  `json:"max_refresh_time" mapstructure:"max_refresh_time" yaml:"max_refresh_time"`
-	DebugExpireTime  int64  `json:"debug_expire_time" mapstructure:"debug_expire_time" yaml:"debug_expire_time"`
-	RefreshThreshold int64  `json:"refresh_threshold" mapstructure:"refresh_threshold" yaml:"refresh_threshold"`
-	TTL              int64  `json:"ttl" mapstructure:"ttl" yaml:"ttl"`
-	DebugTTL         int64  `json:"debug_ttl" mapstructure:"debug_ttl" yaml:"debug_ttl"`
+	Secret          string `json:"secret" mapstructure:"secret" yaml:"secret"`
+	ExpireTime      int64  `json:"expire_time" mapstructure:"expire_time" yaml:"expire_time"`
+	MaxRefreshTime  int64  `json:"max_refresh_time" mapstructure:"max_refresh_time" yaml:"max_refresh_time"`
+	DebugExpireTime int64  `json:"debug_expire_time" mapstructure:"debug_expire_time" yaml:"debug_expire_time"`
+	// RefreshThreshold 距离过期还剩多少「秒」时，给响应加上 X-Token-Refresh 头。
+	// 注意单位是秒，与其他以分钟为单位的字段不同；0 表示不提示刷新。
+	RefreshThreshold int64 `json:"refresh_threshold" mapstructure:"refresh_threshold" yaml:"refresh_threshold"`
+	TTL              int64 `json:"ttl" mapstructure:"ttl" yaml:"ttl"`
+	DebugTTL         int64 `json:"debug_ttl" mapstructure:"debug_ttl" yaml:"debug_ttl"`
 
 	// MaxSessionAge 从登录时刻（claims.auth_time）算起的绝对会话上限，单位分钟。
 	// 达到上限后 token 即使尚未过期也不可再用、不可续签，必须重新登录。
@@ -111,7 +113,9 @@ type Database struct {
 
 // Cache 缓存配置
 type Cache struct {
-	Driver     string `json:"driver" mapstructure:"driver" yaml:"driver"`
+	Driver string `json:"driver" mapstructure:"driver" yaml:"driver"`
+	// Prefix 缓存 key 的命名空间，例如 "rugao" 会生成 "rugao:cache:<key>"；
+	// 留空时回退为 App.Name + ":cache:"。
 	Prefix     string `json:"prefix" mapstructure:"prefix" yaml:"prefix"`
 	ExpireTime int    `json:"expire_time" mapstructure:"expire_time" yaml:"expire_time"`
 }

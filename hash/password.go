@@ -57,10 +57,23 @@ func Argon2idCheck(encodedHash, password string) (bool, error) {
 		return false, fmt.Errorf("argon2 版本不匹配: 期望 %d, 实际 %d", argon2.Version, version)
 	}
 
-	var memory, time uint32
+	var memory, iterations uint32
 	var threads uint8
-	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &time, &threads); err != nil {
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &threads); err != nil {
 		return false, fmt.Errorf("解析 argon2 参数失败: %w", err)
+	}
+
+	// 参数来自哈希串（可能被篡改或损坏），必须先做上限校验，
+	// 否则畸形的 m 值会直接触发一次超大内存分配。
+	const (
+		maxArgonMemory  uint32 = 256 * 1024 // 256 MB
+		maxArgonTime    uint32 = 10
+		maxArgonThreads uint8  = 16
+	)
+	if memory == 0 || memory > maxArgonMemory ||
+		iterations == 0 || iterations > maxArgonTime ||
+		threads == 0 || threads > maxArgonThreads {
+		return false, errors.New("argon2 参数超出允许范围")
 	}
 
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
@@ -72,7 +85,7 @@ func Argon2idCheck(encodedHash, password string) (bool, error) {
 		return false, fmt.Errorf("解码哈希失败: %w", err)
 	}
 
-	actual := argon2.IDKey([]byte(password), salt, time, memory, threads, uint32(len(expected)))
+	actual := argon2.IDKey([]byte(password), salt, iterations, memory, threads, uint32(len(expected)))
 	return subtle.ConstantTimeCompare(actual, expected) == 1, nil
 }
 

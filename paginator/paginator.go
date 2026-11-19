@@ -16,6 +16,9 @@ import (
 const (
 	defaultSortField = "id"   // 默认排序字段
 	defaultSortOrder = "desc" // 默认排序方向
+
+	defaultPerPage = 10  // 未配置时的默认每页条数
+	maxPerPage     = 100 // PerPage 上限，防止客户端传超大值把数据库打爆
 )
 
 // sortKeyPattern 排序字段的字形校验：column 或 table.column。
@@ -95,18 +98,32 @@ func NewPaginator(cfg *config.Paging) *Paginator {
 	}
 }
 
-// Paginate 分页核心方法
+// Paginate 分页核心方法（兼容旧调用：查询出错时记录日志并返回空 Paging）
 // db —— GORM 查询句柄，用以查询数据集和获取数据总数
 // data —— 模型数组指针，传址获取数据
 // param —— 从外部（如 Handler 层）传入的分页参数
+//
+// 需要区分「没有数据」和「查询失败」时请改用 PaginateWithError。
 func (p *Paginator) Paginate(db *gorm.DB, data any, param Param) *Paging {
+	paging, err := p.PaginateWithError(db, data, param)
+	if err != nil {
+		logger.LogIf(err)
+		return &Paging{}
+	}
+	return paging
+}
+
+// PaginateWithError 与 Paginate 行为一致，但会把数据库错误原样返回给调用方。
+func (p *Paginator) PaginateWithError(db *gorm.DB, data any, param Param) (*Paging, error) {
 	// 每次调用创建新的实例，避免并发污染，但保留注入的 cfg
 	instance := &Paginator{
 		query: db,
 		cfg:   p.cfg,
 	}
 
-	instance.initProperties(param)
+	if err := instance.initProperties(param); err != nil {
+		return nil, err
+	}
 
 	// 游标模式：不 OFFSET、不 COUNT(*)，靠上一页最后一条的排序值定位
 	if param.Cursor != nil {
@@ -120,11 +137,8 @@ func (p *Paginator) Paginate(db *gorm.DB, data any, param Param) *Paging {
 								Offset(instance.Offset).
 								Find(data).
 								Error
-
-	// 数据库出错
 	if err != nil {
-		logger.LogIf(err)
-		return &Paging{}
+		return nil, err
 	}
 
 	return &Paging{
@@ -132,11 +146,11 @@ func (p *Paginator) Paginate(db *gorm.DB, data any, param Param) *Paging {
 		PerPage:     instance.PerPage,
 		TotalPage:   instance.TotalPage,
 		TotalCount:  instance.TotalCount,
-	}
+	}, nil
 }
 
 // 初始化分页必须用到的属性，基于这些属性查询数据库
-func (p *Paginator) initProperties(param Param) {
+func (p *Paginator) initProperties(param Param) error {
 	// 获取每页数量
 	p.PerPage = p.getPerPage(param.PerPage)
 
@@ -154,11 +168,15 @@ func (p *Paginator) initProperties(param Param) {
 	// COUNT(*) 在 keyset 分页里没有语义，而且是一次额外的全量扫描，
 	// 游标模式下 TotalCount / TotalPage / CurrentPage 保持 0（与 Paging 注释一致）。
 	if param.Cursor != nil {
-		return
+		return nil
 	}
 
 	// 核心修复：必须先计算总条数和总页数，再计算当前页和 Offset
-	p.TotalCount = p.getTotalCount()
+	totalCount, err := p.getTotalCount()
+	if err != nil {
+		return err
+	}
+	p.TotalCount = totalCount
 	p.TotalPage = p.getTotalPage()
 
 	// getCurrentPage 依赖 TotalPage 进行边界检查
@@ -170,6 +188,8 @@ func (p *Paginator) initProperties(param Param) {
 	} else {
 		p.Offset = 0
 	}
+
+	return nil
 }
 
 // orderClause 生成 ORDER BY 片段。只要主排序键不是唯一的，就必须追加 tie-breaker，
@@ -230,18 +250,22 @@ func normalizeOrder(order string) string {
 }
 
 func (p *Paginator) getPerPage(reqPerPage int) int {
-	// 优先使用请求中的 per_page 参数
-	if reqPerPage > 0 {
-		return reqPerPage
+	perPage := reqPerPage
+
+	// 请求没传时，依次回退到配置默认值和内置默认值
+	if perPage <= 0 {
+		if p.cfg != nil && p.cfg.PerPage > 0 {
+			perPage = p.cfg.PerPage
+		} else {
+			perPage = defaultPerPage
+		}
 	}
 
-	// 其次使用配置中的默认值
-	if p.cfg != nil && p.cfg.PerPage > 0 {
-		return p.cfg.PerPage
+	// 上限保护：PerPage 会直接变成 SQL 的 LIMIT，必须钳制
+	if perPage > maxPerPage {
+		perPage = maxPerPage
 	}
-
-	// 最终兜底默认值
-	return 10
+	return perPage
 }
 
 // getCurrentPage 返回当前页码
@@ -264,12 +288,12 @@ func (p *Paginator) getCurrentPage(reqPage int) int {
 }
 
 // getTotalCount 返回的是数据库里的条数
-func (p *Paginator) getTotalCount() int64 {
+func (p *Paginator) getTotalCount() (int64, error) {
 	var count int64
 	if err := p.query.Count(&count).Error; err != nil {
-		return 0
+		return 0, err
 	}
-	return count
+	return count, nil
 }
 
 // getTotalPage 计算总页数

@@ -168,9 +168,14 @@ func NewIPAPIProvider(baseURL string, client *http.Client) *IPAPIProvider {
 
 // Lookup 查询 ip 对应的中文地址，任何失败都返回「未知位置」。
 func (p *IPAPIProvider) Lookup(ip string) string {
+	ip = strings.TrimSpace(ip)
 	// 判断是否是本地回环地址
 	if ip == "127.0.0.1" || ip == "::1" {
 		return "本地登录"
+	}
+	// 只接受合法 IP，防止把 "1.2.3.4/../" 之类的字符串拼进 URL 路径
+	if net.ParseIP(ip) == nil {
+		return "未知位置"
 	}
 
 	client := p.Client
@@ -293,9 +298,15 @@ func BuildSearchMapFromGin(c any, queryFields []string) map[string]string {
 	// 这里需要导入gin包，为了避免循环依赖，我们使用any
 	// 在实际使用时，调用者需要确保传入的是*gin.Context
 	// 由于helpers包不应该依赖gin，这个函数作为备选方案
+	if c == nil {
+		return search
+	}
 
 	// 使用反射调用DefaultQuery方法
 	v := reflect.ValueOf(c)
+	if !v.IsValid() {
+		return search
+	}
 	defaultQueryMethod := v.MethodByName("DefaultQuery")
 
 	if !defaultQueryMethod.IsValid() {
@@ -321,19 +332,27 @@ func BuildSearchMapFromGin(c any, queryFields []string) map[string]string {
 	return search
 }
 
-// GenerateSecureDigit 生成10位的随机数字字符串
+// GenerateSecureDigit 生成指定长度的随机数字字符串（首位不为 0）。
+//
+// 使用 crypto/rand 直接在 [10^(length-1), 10^length) 区间取随机数，
+// length <= 0 或随机源失败时返回空字符串。
 func GenerateSecureDigit(length int) string {
-	min := new(big.Int)
-	min.SetString("1000000000", length)
-	max := new(big.Int)
-	max.SetString("9999999999", length)
+	if length <= 0 {
+		return ""
+	}
 
-	n, err := rand.Int(rand.Reader, max.Sub(max, min).Add(min, big.NewInt(1)))
+	// min = 10^(length-1)：保证结果恰好 length 位且首位不为 0
+	min := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(length-1)), nil)
+	// max = 10^length：上界（不含），rand.Int 的取值区间是 [0, max-min)
+	max := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(length)), nil)
+	span := new(big.Int).Sub(max, min)
+
+	n, err := rand.Int(rand.Reader, span)
 	if err != nil {
 		return ""
 	}
 
-	return n.String()
+	return new(big.Int).Add(n, min).String()
 }
 
 func TimeNow() string {
@@ -403,8 +422,14 @@ func TrimStruct(s any) {
 	if ve.Kind() != reflect.Struct {
 		return
 	}
+	vt := ve.Type()
 
 	for i := 0; i < ve.NumField(); i++ {
+		sf := vt.Field(i)
+		// 未导出字段既不能 Set，也不能对其取地址后 Interface()（会 panic），直接跳过。
+		if sf.PkgPath != "" {
+			continue
+		}
 		field := ve.Field(i)
 
 		// 修剪直接的 string 字段
@@ -452,6 +477,7 @@ func UnixToString(timestamp int64) string {
 // StringToUnix 将 "2006-01-02 15:04:05" 格式的字符串解析为 Unix 时间戳
 // 功能描述：
 //   - 处理反向转换：将前端传来的本地时间字符串转回后端统一使用的 Unix 时间戳
+//   - 与 UnixToString 对称：两者都按进程本地时区（time.Local）解释，避免东八区往返差 8 小时
 //
 // 参数说明：
 //   - timeStr: string - 格式化后的时间字符串
@@ -462,10 +488,7 @@ func StringToUnix(timeStr string) int64 {
 	if timeStr == "" {
 		return 0
 	}
-	// 注意：这里的 Parse 默认使用 UTC 时区。
-	// 如果前端传过来的是北京时间（没有带时区后缀），更严谨的做法是使用 time.ParseInLocation
-	// t, err := time.ParseInLocation("2006-01-02 15:04:05", timeStr, time.Local)
-	t, err := time.Parse("2006-01-02 15:04:05", timeStr)
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", timeStr, time.Local)
 	if err != nil {
 		return 0
 	}
@@ -493,15 +516,17 @@ func ToCST(t time.Time) time.Time {
 	return t.In(CST)
 }
 
-// BuildPaginatorParam 从任意包含分页字段的请求结构体构建 paginator.Param
+// BuildPaginatorParam 从任意包含分页字段的请求结构体提取分页参数
 // 功能描述：
 //
-//	通过反射或接口转换，将 Handler 层接收到的各类请求结构体（如 requests.PaginationRequest）
-//	快速转换为底层业务和数据层通用的 paginator.Param，减少重复的强转代码。
+//	通过反射，将 Handler 层接收到的各类请求结构体（如 requests.PaginationRequest）
+//	中的 Page / PerPage / Sort / Order 取出来，减少重复的强转代码。
+//	返回四个独立值，调用方可直接塞进 paginator.BuildParam。
 //
 // 使用方法：
 //
-//	param := helpers.BuildPaginatorParam(req)
+//	page, perPage, sort, order := helpers.BuildPaginatorParam(req)
+//	param := paginator.BuildParam(page, perPage, sort, order)
 func BuildPaginatorParam(req any) (int, int, string, string) {
 	page, perPage, sort, order := 0, 0, "", ""
 
@@ -541,7 +566,17 @@ func BuildPaginatorParam(req any) (int, int, string, string) {
 	return page, perPage, sort, order
 }
 
+// CheckPort 检查端口是否可监听。
+// 参数 port 可写 ":8080" 或 "8080"，函数内部会补齐冒号。
 func CheckPort(port string) error {
+	port = strings.TrimSpace(port)
+	if port == "" {
+		return fmt.Errorf("端口不能为空")
+	}
+	if !strings.HasPrefix(port, ":") {
+		port = ":" + port
+	}
+
 	// 尝试连接 IPv4 和 IPv6，任一能连上说明端口已被占用
 	for _, addr := range []string{"127.0.0.1" + port, "[::1]" + port} {
 		conn, err := net.DialTimeout("tcp", addr, time.Millisecond*100)
@@ -559,11 +594,14 @@ func CheckPort(port string) error {
 }
 
 func CountStructFields(structure any) int {
-	t := reflect.TypeOf(structure)
-	if t.Kind() == reflect.Struct {
-		return t.NumField()
+	if structure == nil {
+		return 0
 	}
-	return 0
+	t := reflect.TypeOf(structure)
+	if t == nil || t.Kind() != reflect.Struct {
+		return 0
+	}
+	return t.NumField()
 }
 
 func ToTime(unixTime string) time.Time {

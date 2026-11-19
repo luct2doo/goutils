@@ -68,15 +68,19 @@ func (d *Database) deleteMySQLTables() error {
 		return err
 	}
 
+	// 无论中途是否失败，都要把 foreign_key_checks 恢复：
+	// 连接会被连接池复用，残留 =0 会让后续业务写入跳过外键约束。
 	d.DB.Exec("SET foreign_key_checks = 0;")
+	defer func() {
+		d.DB.Exec("SET foreign_key_checks = 1;")
+	}()
+
 	for _, table := range tables {
 		err := d.DB.Migrator().DropTable(table)
 		if err != nil {
 			return err
 		}
 	}
-
-	d.DB.Exec("SET foreign_key_checks = 1;")
 	return nil
 }
 

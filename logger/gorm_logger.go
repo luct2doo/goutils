@@ -18,6 +18,9 @@ import (
 type GormLogger struct {
 	ZapLogger     *zap.Logger
 	SlowThreshold time.Duration
+	// LogLevel 必须保存下来：gorm 的 LogMode 只通过返回值生效，
+	// 不保存 level 时 Silent/Error 模式会被忽略，所有 SQL 都会写日志。
+	LogLevel gormlogger.LogLevel
 }
 
 // NewGormLogger 外部调用。实例化一个 GormLogger 对象，示例：
@@ -26,9 +29,14 @@ type GormLogger struct {
 //	  Logger: logger.NewGormLogger(),
 //	})
 func NewGormLogger(logger *Logger) *GormLogger {
+	zapLogger := base()
+	if logger != nil && logger.Logger != nil {
+		zapLogger = logger.Logger
+	}
 	return &GormLogger{
-		ZapLogger:     logger.Logger,          // 使用全局的 logger.Logger 对象
-		SlowThreshold: 200 * time.Millisecond, // 慢查询阈值，单位为千分之一秒
+		ZapLogger:     zapLogger,
+		SlowThreshold: 200 * time.Millisecond, // 慢查询阈值
+		LogLevel:      gormlogger.Info,
 	}
 }
 
@@ -37,6 +45,7 @@ func (l GormLogger) LogMode(level gormlogger.LogLevel) gormlogger.Interface {
 	return GormLogger{
 		ZapLogger:     l.ZapLogger,
 		SlowThreshold: l.SlowThreshold,
+		LogLevel:      level,
 	}
 }
 
@@ -57,6 +66,14 @@ func (l GormLogger) Error(ctx context.Context, str string, args ...any) {
 
 // Trace 实现 gormlogger.Interface 的 Trace 方法
 func (l GormLogger) Trace(ctx context.Context, begin time.Time, fc func() (string, int64), err error) {
+	// 零值（直接构造 GormLogger{}）按 Info 处理，保持旧行为；
+	// Silent 模式：gorm 仍会调用 Trace，必须在这里自行短路。
+	if l.LogLevel <= 0 {
+		l.LogLevel = gormlogger.Info
+	}
+	if l.LogLevel == gormlogger.Silent {
+		return
+	}
 
 	// 获取运行时间
 	elapsed := time.Since(begin)
@@ -72,23 +89,29 @@ func (l GormLogger) Trace(ctx context.Context, begin time.Time, fc func() (strin
 
 	// Gorm 错误
 	if err != nil {
-		// 记录未找到的错误使用 warning 等级
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			l.logger().Warn("Database ErrRecordNotFound", logFields...)
-		} else {
-			// 其他错误使用 error 等级
-			logFields = append(logFields, zap.Error(err))
-			l.logger().Error("Database Error", logFields...)
+		if l.LogLevel >= gormlogger.Error {
+			// 记录未找到的错误使用 warning 等级
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				l.logger().Warn("Database ErrRecordNotFound", logFields...)
+			} else {
+				// 其他错误使用 error 等级
+				logFields = append(logFields, zap.Error(err))
+				l.logger().Error("Database Error", logFields...)
+			}
 		}
+		return
 	}
 
 	// 慢查询日志
-	if l.SlowThreshold != 0 && elapsed > l.SlowThreshold {
+	if l.SlowThreshold != 0 && elapsed > l.SlowThreshold && l.LogLevel >= gormlogger.Warn {
 		l.logger().Warn("Database Slow Log", logFields...)
+		return
 	}
 
-	// 记录所有 SQL 请求
-	l.logger().Debug("Database Query", logFields...)
+	// 记录所有 SQL 请求（仅在 Info 级别，避免与上面的 Warn/Error 重复）
+	if l.LogLevel >= gormlogger.Info {
+		l.logger().Debug("Database Query", logFields...)
+	}
 }
 
 // logger 返回一个 caller 指向「触发本次 GORM 回调的业务代码」的 zap logger。

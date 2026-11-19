@@ -191,10 +191,10 @@ func buildCursorCondition(sort, tie, order string) string {
 }
 
 // paginateByCursor 执行游标分页。多取一条用于精确判断 HasMore，随后把切片裁剪回 PerPage。
-func (p *Paginator) paginateByCursor(data any, param Param) *Paging {
+func (p *Paginator) paginateByCursor(data any, param Param) (*Paging, error) {
 	cursor := param.Cursor
 	if cursor == nil || cursor.Sort == nil {
-		return &Paging{}
+		return &Paging{}, nil
 	}
 
 	cond := buildCursorCondition(p.Sort, p.TieBreaker, p.Order)
@@ -210,8 +210,7 @@ func (p *Paginator) paginateByCursor(data any, param Param) *Paging {
 		Limit(p.PerPage + 1).
 		Find(data).Error
 	if err != nil {
-		logger.LogIf(err)
-		return &Paging{}
+		return nil, err
 	}
 
 	paging := &Paging{PerPage: p.PerPage}
@@ -220,7 +219,7 @@ func (p *Paginator) paginateByCursor(data any, param Param) *Paging {
 		extractor = DefaultCursorExtractor(p.Sort, p.TieBreaker)
 	}
 	paging.HasMore, paging.NextCursor = finishCursorPage(data, p.PerPage, extractor)
-	return paging
+	return paging, nil
 }
 
 // finishCursorPage 把「多取一条」的结果裁剪回 PerPage，并用最后一条生成下一页游标。

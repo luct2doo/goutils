@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/luct2doo/goutils/config"
@@ -28,7 +29,20 @@ type CacheService struct {
 //   - Store: 缓存存储接口实现
 func ProvideStore(cacheCfg *config.Cache, redisClient *redis.RedisClient, appCfg *config.App) Store {
 	// TODO: 后续可扩展支持更多驱动，如 "memory"、"file" 等
-	return NewRedisStore(redisClient, appCfg)
+	// 前缀优先使用 cache.prefix（配置为 "app" 时实际 key 前缀是 "app:cache:"），
+	// 未配置时回退到应用名，保持历史行为。
+	prefix := ""
+	if cacheCfg != nil && strings.TrimSpace(cacheCfg.Prefix) != "" {
+		prefix = strings.TrimRight(strings.TrimSpace(cacheCfg.Prefix), ":") + ":cache:"
+	}
+	if prefix == "" {
+		appName := ""
+		if appCfg != nil {
+			appName = appCfg.Name
+		}
+		prefix = appName + ":cache:"
+	}
+	return NewRedisStoreWithPrefix(redisClient, prefix)
 }
 
 // NewCacheService 创建缓存服务实例
@@ -50,7 +64,11 @@ func NewCacheService(store Store) *CacheService {
 //   - expireTime: 过期时间
 func (c *CacheService) Set(ctx context.Context, key string, obj any, expireTime time.Duration) {
 	b, err := json.Marshal(obj)
-	logger.LogIf(err)
+	if err != nil {
+		// 序列化失败就不要写缓存：写进去的是空串，读出来只会得到解析错误
+		logger.LogIf(err)
+		return
+	}
 	c.store.Set(ctx, key, string(b), expireTime)
 }
 
@@ -62,9 +80,15 @@ func (c *CacheService) Set(ctx context.Context, key string, obj any, expireTime 
 //   - any: 缓存的值（任意类型）
 func (c *CacheService) Get(ctx context.Context, key string) any {
 	stringValue := c.store.Get(ctx, key)
+	// 未命中是正常路径，不要走到 json.Unmarshal 去打一条 ERROR 日志
+	if stringValue == "" {
+		return nil
+	}
 	var wanted any
-	err := json.Unmarshal([]byte(stringValue), &wanted)
-	logger.LogIf(err)
+	if err := json.Unmarshal([]byte(stringValue), &wanted); err != nil {
+		logger.LogIf(err)
+		return nil
+	}
 	return wanted
 }
 
@@ -266,7 +290,10 @@ func (c *CacheService) Forget(ctx context.Context, key string) {
 //   - value: 缓存值（任意类型）
 func (c *CacheService) Forever(ctx context.Context, key string, value any) {
 	b, err := json.Marshal(value)
-	logger.LogIf(err)
+	if err != nil {
+		logger.LogIf(err)
+		return
+	}
 	c.store.Forever(ctx, key, string(b))
 }
 

@@ -95,7 +95,9 @@ config → app.NewApp → logger.NewLogger → jwt / redis / database / cache / 
 cursor, err := paginator.ParseCursor(c.Query("cursor")) // 空串 → nil，自动回到 OFFSET 模式
 if err != nil { /* 返回 400 */ }
 
-paging := p.Paginate(db, &users, paginator.Param{
+// 第一个参数必须带 Model，否则 OFFSET 模式下 COUNT(*) 推断不出表名，
+// 错误被吞掉后 TotalCount 会静默变成 0（游标模式不 COUNT，不受影响）
+paging := p.Paginate(db.Model(&User{}), &users, paginator.Param{
     PerPage:      20,
     Sort:         "created_at",
     Order:        "desc",
@@ -108,11 +110,21 @@ paging := p.Paginate(db, &users, paginator.Param{
 
 `Param` 新增了字段，请用 `BuildParam` 或命名字段构造，不要用位置初始化。
 
+`PerPage` 会被钳制在 `maxPerPage = 100`，避免客户端传超大值直接打到数据库。
+需要区分「没有数据」和「查询失败」时，用 `PaginateWithError`（返回 `(*Paging, error)`）；
+旧的 `Paginate` 保持原签名，查询失败时记录日志并返回空 `*Paging`。
+
 ## 安全注意事项
 
 - `paginator.Param.Sort` / `Order` / `TieBreaker` 会被拼进 SQL 的 `ORDER BY` 与游标 `WHERE` 片段。库内已做字形校验（`column` 或 `table.column`）+ 可选白名单（`Param.AllowedSorts`，仅约束 `Sort`），请不要在调用前绕过本库自行拼接。游标里的值一律通过 `?` 绑定；`ParseCursor` 返回的游标字符串来自客户端，不可信，不要用于鉴权或拼接 SQL。
 - 游标分页的排序字段若为 NULL 会漏行，请用 NOT NULL 列；时间类型的排序字段建议业务侧自定义 `CursorExtractor`，把值规范成数据库可比较的格式。
-- `captcha` 的测试旁路需同时满足 `TestingEnabled=true`、非 production 环境、`TestingKey` 非空且 id 完全匹配。生产环境请保持 `TestingEnabled=false`。
+- `captcha` 的测试旁路需同时满足 `TestingEnabled=true`、非 production 环境、`TestingKey` 非空且 id 完全匹配。
+  `TestingKey` 留空时不会放行任何请求。验证码校验通过后会立即从 Redis 删除（`clear=true`），同一 id 不能重放。
+- `cache` 的 key 前缀优先取 `cache.prefix`（`"rugao"` → `rugao:cache:<key>`），留空才回退应用名；所有 Redis 操作都会使用调用方传入的 `context`（`RedisClient.WithContext`），请求超时/取消可以生效。
+- `hash.BcryptHash` 失败会返回 `("", err)`，请务必检查 `err`；`BcryptIsHashed` 依据 `$2a$/$2b$/$2y$` 前缀判断，而不是长度。
+- `jwt.refresh_threshold` 的单位是**秒**（与其他分钟单位的字段不同），表示距离过期多少秒时返回 `X-Token-Refresh`。
+- `rsa` 的 `parsePublicKey` 同时支持 PKIX（`PUBLIC KEY`）与 PKCS#1（`RSA PUBLIC KEY`）两种 PEM。
+- `paginator` 的 `PerPage` 上限为 100；`helpers.GenerateSecureDigit(length)` 会真正返回 `length` 位数字，`TrimStruct` 会跳过未导出字段，不再 panic。
 - `database.DeleteAllTables`、`redis.FlushDB`、`cache.Flush` 均为破坏性操作，请只在测试环境调用。
 - `helpers.GetLocationFromIP` 默认使用 `http://ip-api.com`（明文 HTTP，受免费额度限制）。生产环境请用 `helpers.NewIPAPIProvider` 注入 HTTPS 端点或自建代理。
 - `redis.NewRedisClient*` 在配置非法时不会回落到本机 Redis，而是把错误写入 `RedisClient.ConfigErr`，请检查该字段后再使用。

@@ -129,8 +129,8 @@ func (h *RSAHelper) EncryptWithPublicKey(plaintext string, publicKeyPEM string) 
 	// 参数说明：rand.Reader(随机源), publicKey(公钥), sha256.New()(哈希函数), nil(标签，通常为nil), []byte(明文)
 	ciphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, publicKey, []byte(plaintext), nil)
 	if err != nil {
-		// 捕获并提示长度超限的常见错误
-		if err.Error() == "crypto/rsa: message too long for RSA public key size" {
+		// 捕获并提示长度超限的常见错误（用哨兵错误判断，别比较字符串）
+		if errors.Is(err, rsa.ErrMessageTooLong) {
 			return "", errors.New("加密失败：明文太长，超出了 RSA 密钥的长度限制。请考虑使用 AES 混合加密。")
 		}
 		return "", fmt.Errorf("RSA 加密失败: %w", err)
@@ -385,6 +385,8 @@ func parsePrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 }
 
 // parsePublicKey 内部辅助函数：从 PEM 字符串解析出 *rsa.PublicKey
+// 同时兼容 PKIX（"PUBLIC KEY"，x509.MarshalPKIXPublicKey / openssl rsa -pubout）
+// 与 PKCS#1（"RSA PUBLIC KEY"，openssl rsa -RSAPublicKey_out）两种格式。
 func parsePublicKey(pemStr string) (*rsa.PublicKey, error) {
 	block, _ := pem.Decode([]byte(pemStr))
 	if block == nil {
@@ -392,14 +394,18 @@ func parsePublicKey(pemStr string) (*rsa.PublicKey, error) {
 	}
 
 	pubInterface, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("解析公钥失败: %w", err)
+	if err == nil {
+		pubKey, ok := pubInterface.(*rsa.PublicKey)
+		if !ok {
+			return nil, errors.New("解析出的公钥不是 RSA 类型")
+		}
+		return pubKey, nil
 	}
 
-	pubKey, ok := pubInterface.(*rsa.PublicKey)
-	if !ok {
-		return nil, errors.New("解析出的公钥不是 RSA 类型")
+	// 兼容 PKCS#1 格式的 RSA 公钥
+	if pkcs1Key, pkcs1Err := x509.ParsePKCS1PublicKey(block.Bytes); pkcs1Err == nil {
+		return pkcs1Key, nil
 	}
 
-	return pubKey, nil
+	return nil, fmt.Errorf("解析公钥失败: %w", err)
 }

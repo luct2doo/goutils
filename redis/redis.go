@@ -215,6 +215,19 @@ func defaultInt(val int, fallback int) int {
 	return val
 }
 
+// WithContext 返回一个共享同一 go-redis Client 的浅拷贝，仅替换本次操作使用的 Context。
+//
+// 用于让请求级 context（超时 / 取消 / trace）真正作用到 Redis 调用上；
+// 拷贝不修改原实例，因此可以安全地并发调用。
+func (rds *RedisClient) WithContext(ctx context.Context) *RedisClient {
+	if rds == nil || ctx == nil || ctx == rds.Context {
+		return rds
+	}
+	c := *rds
+	c.Context = ctx
+	return &c
+}
+
 // Ping 用以测试 redis 连接是否正常
 func (rds *RedisClient) Ping() error {
 	_, err := rds.Client.Ping(rds.Context).Result()

@@ -21,8 +21,18 @@ type Limiter struct {
 
 func NewLimiter(redisClient *redis.RedisClient, appCfg *config.App) *Limiter {
 	// 初始化时创建一次 store 即可
+	if redisClient == nil || redisClient.Client == nil {
+		err := errors.New("限流器未初始化：Redis 客户端为空")
+		logger.LogIf(err)
+		return &Limiter{redisClient: redisClient}
+	}
+
+	prefix := ":limiter"
+	if appCfg != nil {
+		prefix = appCfg.Name + ":limiter"
+	}
 	store, err := sredis.NewStoreWithOptions(redisClient.Client, limiterlib.StoreOptions{
-		Prefix: appCfg.Name + ":limiter",
+		Prefix: prefix,
 	})
 	if err != nil {
 		logger.LogIf(err)
@@ -61,7 +71,13 @@ func (l *Limiter) GetKeyRouteWithIP(c *gin.Context) string {
 func (l *Limiter) CheckRate(c *gin.Context, key, formatted string) (limiterlib.Context, error) {
 	var ctx limiterlib.Context
 
-	// 0. store 为空说明初始化时连 Redis 失败（NewLimiter 只能记日志，构造函数没返回 error）。
+	// 0. 未配置限流（formatted 为空）：直接视为未超额，
+	//    与 config.RateLimit 中「留空表示该路由不限流」的约定一致。
+	if strings.TrimSpace(formatted) == "" {
+		return ctx, nil
+	}
+
+	// 1. store 为空说明初始化时连 Redis 失败（NewLimiter 只能记日志，构造函数没返回 error）。
 	// 这里提前拦下，否则 limiterlib 会在下面 nil 解引用 panic。
 	if l == nil || l.store == nil {
 		err := errors.New("限流器未初始化：Redis store 不可用")

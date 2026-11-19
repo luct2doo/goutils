@@ -1,8 +1,10 @@
 package response
 
 import (
-	"github.com/luct2doo/goutils/logger"
+	"errors"
 	"net/http"
+
+	"github.com/luct2doo/goutils/logger"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -94,9 +96,13 @@ func Abort429(c *gin.Context, msg ...string) {
 // 在解析用户请求，请求的格式或者方法不符合预期时调用
 func BadRequest(c *gin.Context, err error, msg ...string) {
 	logger.LogIf(err)
+	errMsg := ""
+	if err != nil {
+		errMsg = err.Error()
+	}
 	c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
 		"message": defaultMessage("请求解析错误，请确认请求格式是否正确。上传文件请使用 multipart 标头，参数请使用 JSON 格式。", msg...),
-		"error":   err.Error(),
+		"error":   errMsg,
 		"code":    http.StatusBadRequest,
 	})
 }
@@ -107,14 +113,18 @@ func Error(c *gin.Context, err error, msg ...string) {
 	logger.LogIf(err)
 
 	// error 类型为『数据库未找到内容』
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		Abort404(c)
 		return
 	}
 
+	errMsg := ""
+	if err != nil {
+		errMsg = err.Error()
+	}
 	c.AbortWithStatusJSON(http.StatusUnprocessableEntity, gin.H{
 		"message": defaultMessage("请求处理失败，请查看 error 的值", msg...),
-		"error":   err.Error(),
+		"error":   errMsg,
 		"code":    http.StatusUnprocessableEntity,
 	})
 }

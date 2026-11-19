@@ -80,10 +80,9 @@ func (fs *fileService) Put(data []byte, to string) error {
 // 返回:
 //   - bool: 如果文件存在，返回 true；否则返回 false
 func (fs *fileService) Exists(fileToCheck string) bool {
-	if _, err := os.Stat(fileToCheck); os.IsNotExist(err) {
-		return false
-	}
-	return true
+	_, err := os.Stat(fileToCheck)
+	// 只有明确的“不存在”才算 false；权限等其他错误同样视为不可用
+	return err == nil
 }
 
 // FileNameWithoutExtension 获取文件名（不包含扩展名）
@@ -107,10 +106,37 @@ func (fs *fileService) currentUID(c *gin.Context) string {
 	return "anonymous"
 }
 
+// sanitizePathSegment 清理用作目录名的片段，防止 "../../" 之类的目录穿越。
+// 空值、"."、".." 会被替换为占位名；只保留字母、数字、下划线、短横线和点，
+// 其余字符统一替换为下划线。
+func sanitizePathSegment(segment, fallback string) string {
+	segment = strings.TrimSpace(segment)
+	if segment == "" || segment == "." || segment == ".." {
+		return fallback
+	}
+	var b strings.Builder
+	b.Grow(len(segment))
+	for _, r := range segment {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	out := strings.ReplaceAll(b.String(), "..", "_")
+	if out == "" || out == "." || out == "_" {
+		return fallback
+	}
+	return out
+}
+
 // saveUpload 将上传文件保存到 {root}/uploads/{dest}/{日期}/{用户ID}/ 目录下，
 // 返回 web 相对目录 dirName（含末尾斜杠）与本地完整路径 fullPath。
 func (fs *fileService) saveUpload(c *gin.Context, file *multipart.FileHeader, dest string) (dirName, fullPath string, err error) {
-	dirName = fmt.Sprintf("/uploads/%s/%s/%s/", dest, fs.app.TimeNowInTimezone().Format("2006/01/02"), fs.currentUID(c))
+	dest = sanitizePathSegment(dest, "misc")
+	uid := sanitizePathSegment(fs.currentUID(c), "anonymous")
+	dirName = fmt.Sprintf("/uploads/%s/%s/%s/", dest, fs.app.TimeNowInTimezone().Format("2006/01/02"), uid)
 	if err = os.MkdirAll(fs.root+dirName, 0o755); err != nil {
 		return "", "", err
 	}
@@ -130,6 +156,18 @@ func (fs *fileService) SaveUploadAvatar(c *gin.Context, file *multipart.FileHead
 		return "", err
 	}
 
+	// 后续任何一步失败都清掉已落盘的文件，避免留下孤儿文件
+	success := false
+	resizeAvatarPath := ""
+	defer func() {
+		if !success {
+			_ = os.Remove(fullPath)
+			if resizeAvatarPath != "" {
+				_ = os.Remove(resizeAvatarPath)
+			}
+		}
+	}()
+
 	// 裁切图片
 	img, err := imaging.Open(fullPath, imaging.AutoOrientation(true))
 	if err != nil {
@@ -137,7 +175,7 @@ func (fs *fileService) SaveUploadAvatar(c *gin.Context, file *multipart.FileHead
 	}
 	resizeAvatar := imaging.Thumbnail(img, 256, 256, imaging.Lanczos)
 	resizeAvatarName := fs.RandomNameFromUploadFile(file)
-	resizeAvatarPath := filepath.Dir(fullPath) + "/" + resizeAvatarName
+	resizeAvatarPath = filepath.Join(filepath.Dir(fullPath), resizeAvatarName)
 	if err := imaging.Save(resizeAvatar, resizeAvatarPath); err != nil {
 		return "", err
 	}
@@ -146,6 +184,7 @@ func (fs *fileService) SaveUploadAvatar(c *gin.Context, file *multipart.FileHead
 	if err := os.Remove(fullPath); err != nil {
 		return "", err
 	}
+	success = true
 
 	return dirName + resizeAvatarName, nil
 }
