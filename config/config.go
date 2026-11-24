@@ -167,3 +167,12 @@ type RateLimit struct {
 	// LoginFailWindow 登录失败次数的统计窗口（滑动窗口，不是固定周期）
 	LoginFailWindow time.Duration `json:"login_fail_window" mapstructure:"login_fail_window" yaml:"login_fail_window"`
 }
+
+type VerifyCode struct {
+	CodeLength       int    `json:"code_length" mapstructure:"code_length" yaml:"code_length"`
+	ExpireTime       int    `json:"expire_time" mapstructure:"expire_time" yaml:"expire_time"`
+	DebugExpireTime  int    `json:"debug_expire_time" mapstructure:"debug_expire_time" yaml:"debug_expire_time"`
+	DebugCode        string `json:"debug_code" mapstructure:"debug_code" yaml:"debug_code"`
+	DebugPhonePrefix string `json:"debug_phone_prefix" mapstructure:"debug_phone_prefix" yaml:"debug_phone_prefix"`
+	DebugEmailSuffix string `json:"debug_email_suffix" mapstructure:"debug_email_suffix" yaml:"debug_email_suffix"`
+}
