@@ -19,14 +19,18 @@ type VerifyCode struct {
 }
 
 func NewVerifyCode(app *app.App, appCfg *config.App, verifyCodeCfg *config.VerifyCode, redis *redis.RedisClient) *VerifyCode {
+	// 必须走 NewRedisStore：RedisStore.Set 依赖 verifyCodeCfg/app 决定 TTL，
+	// 直接字面量构造会漏掉这两个字段，第一次发码就 nil pointer panic。
 	return &VerifyCode{
 		appCfg:        appCfg,
 		verifyCodeCfg: verifyCodeCfg,
 		app:           app,
-		Store: &RedisStore{
-			RedisClient: redis,
-			KeyPrefix:   appCfg.Name + ":verify_code:",
-		},
+		Store: NewRedisStore(
+			redis,
+			appCfg.Name+":verify_code:",
+			verifyCodeCfg,
+			app,
+		),
 	}
 }
 
@@ -57,6 +61,10 @@ func (vc *VerifyCode) generateVerifyCode(key string) string {
 		key: code,
 	})
 
-	vc.Store.Set(key, code)
+	// Set 失败（Redis 不可用）时返回空串，让调用方能明确告知用户「发送失败」；
+	// 否则码只存在于返回值里，校验时必然失败，用户只会看到「验证码错误」。
+	if !vc.Store.Set(key, code) {
+		return ""
+	}
 	return code
 }
